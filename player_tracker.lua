@@ -1400,7 +1400,10 @@ local function updateLoop()
       refreshEnvironment()
       lastEnvironment=now
     end
-    if state.hud.entityTracker and
+    -- IMPORTANT FOR FUTURE SCANNERS: AP world/peripheral scans can force-close
+    -- the Keyboard Module container when they synchronize module data. Never
+    -- run scanEntities (or future geo/distance scans) during keyboard capture.
+    if state.hud.entityTracker and not state.keyboardOpen and not state.hudMenuOpen and
        state.entityTrack.filter and
        (lastEntityScan==0 or now-lastEntityScan>=CONFIG.ENTITY_SCAN_SECONDS) then
       refreshEntityTracker()
