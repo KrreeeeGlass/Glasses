@@ -16,6 +16,9 @@ local CONFIG = {
   ROSTER_SECONDS = 1.00,     -- Full online-player scan (the expensive part).
   TRACKED_OFFLINE_GRACE_SECONDS = 6.0, -- Ignore brief detector lookup failures.
   ENVIRONMENT_SECONDS = 1.00,
+  BUDDY_SCAN_SECONDS = 3.00, -- Filtered entity scan; deliberately slower to avoid lag.
+  BUDDY_SCAN_RANGE = 64,
+  BUDDY_ENTITY_ID = "nomansland:buddy",
   SPEED_SAMPLE_SECONDS = 0.10,
   BLOCK_TARGET_RANGE = 64,   -- Requested ray length; server config may clamp it.
   BLOCK_TARGET_BUTTON = 3,   -- 1 attack, 2 use, 3 pick-block (middle mouse).
@@ -94,6 +97,7 @@ local state = {
   keyboardOpen = false,
   currentDimension = nil,
   environment = {},
+  buddy = {available=false,found=false},
   speed = 0,
   lastSpeedPos = nil,
   lastSpeedTime = nil,
@@ -127,6 +131,13 @@ end
 
 local function normalizeAngle(degrees)
   return (degrees + 180) % 360 - 180
+end
+
+local function cardinalFromOffset(dx,dz)
+  local atan2=math.atan2 or function(y,x) return math.atan(y,x) end
+  local angle=(math.deg(atan2(dz,dx))+360)%360
+  local names={"E","SE","S","SW","W","NW","N","NE"}
+  return names[math.floor((angle+22.5)/45)%8+1]
 end
 
 local function normalizeDimension(value)
@@ -396,14 +407,14 @@ local function rebuildUI(layout)
   local moveY=layout.h-m-moveH
   local envW=pw*CONFIG.ENV_WIDTH_FACTOR
   local envX=m
-  local envH=lh*4+8*f
+  local envH=lh*6+8*f
   local envY=clamp(layout.h*CONFIG.ENV_LEFT_Y_RATIO,m,layout.h-m-envH)
   ui.envBg=createRect({x=envX,y=envY,z=0,sizeX=envW,sizeY=envH,
     color=CONFIG.COLORS.panel,opacity=CONFIG.PANEL_OPACITY})
   ui.envAccent=createRect({x=envX,y=envY,z=0.4,sizeX=envW,sizeY=1.5*f,
     color=CONFIG.COLORS.tracked,opacity=0.95})
   ui.envLines={}
-  for i=1,4 do
+  for i=1,6 do
     ui.envLines[i]=createText({x=envX+pad,y=envY+4*f+lh*(i-1),z=1,content="",
       fontSize=(i==1 and f or f*0.80),color=(i==1 and CONFIG.COLORS.title or CONFIG.COLORS.normal)})
   end
@@ -706,6 +717,48 @@ local function refreshEnvironment()
   else e.weather="Clear" end
   state.currentDimension=e.dimension or state.currentDimension
   state.environment=e
+end
+
+local function refreshBuddy()
+  if not environmentDetector or type(environmentDetector.scanEntities)~="function" then
+    state.buddy={available=false,found=false,error="scan unavailable"}
+    return
+  end
+  local entities,err=safeCall(environmentDetector.scanEntities,
+    CONFIG.BUDDY_SCAN_RANGE,false,CONFIG.BUDDY_ENTITY_ID)
+  if type(entities)~="table" then
+    state.buddy={available=false,found=false,error=tostring(err or "scan failed")}
+    return
+  end
+  local nearest,nearestDistance
+  for _,entity in pairs(entities) do
+    if type(entity)=="table" then
+      local rx=tonumber(entity.x or entity.r) or 0
+      local ry=tonumber(entity.y or entity.u) or 0
+      local rz=tonumber(entity.z or entity.f) or 0
+      local d=math.sqrt(rx*rx+ry*ry+rz*rz)
+      if not nearestDistance or d<nearestDistance then
+        nearest,nearestDistance=entity,d
+      end
+    end
+  end
+  if not nearest then
+    state.buddy={available=true,found=false,range=CONFIG.BUDDY_SCAN_RANGE}
+    return
+  end
+  local rx=tonumber(nearest.x or nearest.r) or 0
+  local ry=tonumber(nearest.y or nearest.u) or 0
+  local rz=tonumber(nearest.z or nearest.f) or 0
+  -- Refresh the origin only on a positive hit so estimated world coordinates
+  -- remain useful even when the other player-related HUDs are disabled.
+  local liveOwner=state.ownerName and safeCall(detector.getPlayer,state.ownerName)
+  if type(liveOwner)=="table" then state.owner=liveOwner end
+  local origin=state.owner or state.eye
+  state.buddy={available=true,found=true,range=CONFIG.BUDDY_SCAN_RANGE,
+    distance=nearestDistance,rx=rx,ry=ry,rz=rz,
+    x=origin and origin.x+rx or nil,
+    y=origin and origin.y+ry or nil,
+    z=origin and origin.z+rz or nil}
 end
 
 local function updateSpeed(now)
@@ -1036,20 +1089,41 @@ local function render(layout)
   end
 
   local e=state.environment or {}
+  local buddy=state.buddy or {}
   local showEnvironment=state.hud.environment
   setEnabled(ui.envBg,showEnvironment); setEnabled(ui.envAccent,showEnvironment)
   local dim=(e.dimension and (tostring(e.dimension):match("[^:]+$") or tostring(e.dimension))) or "unknown"
   local biome=(e.biome and (tostring(e.biome):match("[^:]+$") or tostring(e.biome))) or "unknown"
   local envLines
   if e.available==false then
-    envLines={"ENVIRONMENT","Detector unavailable","",""}
+    envLines={"ENVIRONMENT","Detector unavailable","","","",""}
   else
+    local buddyLine,buddyPosition
+    if buddy.available==false then
+      buddyLine="Buddy scan unavailable"
+      buddyPosition="Find: mushroom fields"
+    elseif buddy.found then
+      buddyLine=string.format("BUDDY FOUND | %.1fm %s",buddy.distance or 0,
+        cardinalFromOffset(buddy.rx or 0,buddy.rz or 0))
+      if buddy.x and buddy.y and buddy.z then
+        buddyPosition=string.format("~XYZ: %d, %d, %d",round(buddy.x),round(buddy.y),round(buddy.z))
+      else
+        buddyPosition=string.format("Offset: %.0f, %.0f, %.0f",buddy.rx or 0,buddy.ry or 0,buddy.rz or 0)
+      end
+    else
+      buddyLine=string.format("Buddy: none within %dm",buddy.range or CONFIG.BUDDY_SCAN_RANGE)
+      buddyPosition=(biome=="mushroom_fields") and "Habitat found: search island" or
+        "Find: mushroom fields"
+    end
     envLines={"ENVIRONMENT",abbreviate(dim,14).." | "..abbreviate(biome,16),
       formatClock(e.time).." | "..tostring(e.weather or "--"),
-      string.format("Light: block %s | sky %s",e.blockLight or "--",e.skyLight or "--")}
+      string.format("Light: block %s | sky %s",e.blockLight or "--",e.skyLight or "--"),
+      buddyLine,buddyPosition}
   end
   for i,obj in ipairs(ui.envLines or {}) do
-    setText(obj,envLines[i] or "",i==1 and CONFIG.COLORS.title or CONFIG.COLORS.normal)
+    local envColor=i==1 and CONFIG.COLORS.title or
+      ((i==5 and buddy.found) and CONFIG.COLORS.tracked or CONFIG.COLORS.normal)
+    setText(obj,envLines[i] or "",envColor)
     setEnabled(obj,showEnvironment)
   end
 
@@ -1137,6 +1211,7 @@ local function updateLoop()
   local lastDetectorRefresh=0
   local lastKeyboardCheck=0
   local lastEnvironment=0
+  local lastBuddyScan=0
   while true do
     local layout=getLayout()
     if layout.key~=state.layoutKey then rebuildUI(layout) end
@@ -1170,6 +1245,11 @@ local function updateLoop()
        (lastEnvironment==0 or now-lastEnvironment>=CONFIG.ENVIRONMENT_SECONDS) then
       refreshEnvironment()
       lastEnvironment=now
+    end
+    if state.hud.environment and
+       (lastBuddyScan==0 or now-lastBuddyScan>=CONFIG.BUDDY_SCAN_SECONDS) then
+      refreshBuddy()
+      lastBuddyScan=now
     end
     if keyboard and (lastKeyboardCheck==0 or
        now-lastKeyboardCheck>=CONFIG.KEYBOARD_STATE_SECONDS) then
