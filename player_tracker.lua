@@ -17,7 +17,7 @@ local CONFIG = {
   TRACKED_OFFLINE_GRACE_SECONDS = 6.0, -- Ignore brief detector lookup failures.
   ENVIRONMENT_SECONDS = 1.00,
   ENTITY_SCAN_SECONDS = 3.00, -- Filtered entity scan; deliberately slower to avoid lag.
-  ENTITY_SCAN_RANGE = 64,
+  ENTITY_SCAN_RANGE = 64, -- Requested radius; automatically reduced to the server maximum.
   DEFAULT_ENTITY_ID = "nomansland:buddy",
   SPEED_SAMPLE_SECONDS = 0.10,
   BLOCK_TARGET_RANGE = 64,   -- Requested ray length; server config may clamp it.
@@ -110,6 +110,7 @@ local state = {
   trackedLastSeen = nil,
   lastOwnerYaw = nil,
   detailCursor = 0,
+  entityScanRange = nil,
 }
 local HUD_MENU_ITEMS={
   {key="players",label="Player list"},
@@ -747,12 +748,28 @@ local function refreshEntityTracker()
     state.entityTrack={filter=filter,available=false,found=false,error="scan unavailable"}
     return
   end
-  local entities,err=safeCall(environmentDetector.scanEntities,
-    CONFIG.ENTITY_SCAN_RANGE,false,filter)
+  local scanRange=state.entityScanRange or CONFIG.ENTITY_SCAN_RANGE
+  local entities,err
+  while scanRange>=1 do
+    entities,err=safeCall(environmentDetector.scanEntities,scanRange,false,filter)
+    if type(entities)=="table" then break end
+    local message=tostring(err or ""):lower()
+    if not (message:find("max",1,true) or message:find("radius",1,true) or
+       message:find("range",1,true)) then break end
+    -- AP normally includes the configured maximum in its error. Use the last
+    -- number present; otherwise halve the request until the server accepts it.
+    local reportedMax
+    for number in message:gmatch("%d+") do reportedMax=tonumber(number) end
+    local reduced=(reportedMax and reportedMax>0 and reportedMax<scanRange) and
+      reportedMax or math.floor(scanRange/2)
+    if reduced>=scanRange then reduced=scanRange-1 end
+    scanRange=reduced
+  end
   if type(entities)~="table" then
     state.entityTrack={filter=filter,available=false,found=false,error=tostring(err or "scan failed")}
     return
   end
+  state.entityScanRange=scanRange
   local nearest,nearestDistance
   for _,entity in pairs(entities) do
     if type(entity)=="table" then
@@ -766,7 +783,7 @@ local function refreshEntityTracker()
     end
   end
   if not nearest then
-    state.entityTrack={filter=filter,available=true,found=false,range=CONFIG.ENTITY_SCAN_RANGE}
+    state.entityTrack={filter=filter,available=true,found=false,range=scanRange}
     return
   end
   local rx=tonumber(nearest.x or nearest.r) or 0
@@ -777,7 +794,7 @@ local function refreshEntityTracker()
   local liveOwner=state.ownerName and safeCall(detector.getPlayer,state.ownerName)
   if type(liveOwner)=="table" then state.owner=liveOwner end
   local origin=state.owner or state.eye
-  state.entityTrack={filter=filter,available=true,found=true,range=CONFIG.ENTITY_SCAN_RANGE,
+  state.entityTrack={filter=filter,available=true,found=true,range=scanRange,
     distance=nearestDistance,rx=rx,ry=ry,rz=rz,
     x=origin and origin.x+rx or nil,
     y=origin and origin.y+ry or nil,
