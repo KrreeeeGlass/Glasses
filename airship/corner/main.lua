@@ -1,5 +1,5 @@
 -- Wireless corner actuator for the Create Propulsion airship autopilot.
-local VERSION="1.1.0"
+local VERSION="1.2.0"
 local PROTOCOL="sable_airship_thrusters_v1"
 local WATCHDOG_SECONDS=0.60
 local RELEASE_SECONDS=3.0
@@ -9,6 +9,12 @@ local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
 
 local controllerId=nil
 local thrusters={}
+
+local function advertisement()
+  local advertised={}
+  for name,t in pairs(thrusters) do advertised[#advertised+1]={name=name,kind=t.kind} end
+  return {type="advertise",thrusters=advertised,version=VERSION}
+end
 
 local function discover()
   thrusters={}
@@ -44,16 +50,19 @@ print("Corner relay "..VERSION.." | AUTO PAIR | 3 thrusters")
 print("Waiting for center controller...")
 
 local lastCommand=os.clock()
+local nextAdvertisement=0
 while true do
+  if os.clock()>=nextAdvertisement then
+    rednet.broadcast(advertisement(),PROTOCOL)
+    nextAdvertisement=os.clock()+0.50
+  end
   local sender,msg=rednet.receive(PROTOCOL,0.10)
   if sender and type(msg)=="table" then
     if msg.type=="discover" and (not controllerId or controllerId==sender or os.clock()-lastCommand>RELEASE_SECONDS) then
       if controllerId~=sender then print("Bound to center #"..sender) end
       controllerId=sender
       lastCommand=os.clock()
-      local advertised={}
-      for name,t in pairs(thrusters) do advertised[#advertised+1]={name=name,kind=t.kind} end
-      rednet.send(sender,{type="advertise",thrusters=advertised,version=VERSION},PROTOCOL)
+      rednet.send(sender,advertisement(),PROTOCOL)
     elseif sender==controllerId and msg.type=="set" and msg.controllerId==controllerId and type(msg.name)=="string" then
       local t=thrusters[msg.name]
       if t then

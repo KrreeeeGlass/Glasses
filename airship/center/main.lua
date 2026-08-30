@@ -5,7 +5,7 @@
 -- Fly:       ship_autopilot goto X Y Z
 -- Other:     ship_autopilot status | hold | abort | setup | list
 
-local VERSION = "1.1.0"
+local VERSION = "1.2.0"
 local SETTINGS_FILE = "/.ship_autopilot.settings"
 local CONTROL_DT = 0.10
 local REMOTE_PROTOCOL = "sable_airship_thrusters_v1"
@@ -38,6 +38,7 @@ local cfg, destination, phase, message
 local nav, gimbal
 local thrusters = {}
 local relayCount = 0
+local wirelessStatus = "MISSING"
 local running = true
 local lastPosition, lastPositionTime
 local velocity = {x=0,y=0,z=0}
@@ -106,6 +107,7 @@ local function discover()
   if wireless then
     local modemName=peripheral.getName(wireless)
     if not rednet.isOpen(modemName) then rednet.open(modemName) end
+    wirelessStatus=modemName..(rednet.isOpen(modemName) and " OPEN" or " CLOSED")
     local seenRelays={}
     local deadline=os.clock()+3.0
     local nextBroadcast=0
@@ -132,6 +134,8 @@ local function discover()
       end
     end
     for _ in pairs(seenRelays) do relayCount=relayCount+1 end
+  else
+    wirelessStatus="MISSING (attach/activate a wireless or Ender modem)"
   end
 end
 
@@ -143,6 +147,7 @@ local function listPeripherals()
   discover()
   print("Navigation table: "..(nav and "FOUND" or "MISSING"))
   print("Gimbal sensor:   "..(gimbal and "FOUND" or "optional / missing"))
+  print("Wireless modem:  "..wirelessStatus)
   print("Corner relays:   "..relayCount.." / 4")
   local names={} for n in pairs(thrusters) do names[#names+1]=n end table.sort(names)
   print("Thrusters ("..tostring(#names).."): ")
