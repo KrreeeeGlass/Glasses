@@ -450,6 +450,28 @@ local function rebuildUI(layout)
     ui.entityLines[i]=createText({x=envX+pad,y=entityY+4*f+lh*(i-1),z=1,content="",
       fontSize=(i==1 and f or f*0.80),color=(i==1 and CONFIG.COLORS.title or CONFIG.COLORS.normal)})
   end
+  ui.entityArrowCenterX=envX+envW-17*f
+  ui.entityArrowCenterY=entityY+17*f
+  local ecx,ecy,er=ui.entityArrowCenterX,ui.entityArrowCenterY,11*f
+  ui.entityCompassRing=createCircle({x=ecx,y=ecy,z=2,radius=er,filled=false,
+    borderWidth=clamp(1.2*f,1,3),segments=36,pixelated=false,
+    color=CONFIG.COLORS.border,opacity=0.95,enabled=false})
+  ui.entityCompassTicks={
+    createLine({x=ecx,y=ecy-er-1*f,z=2.5,endX=ecx,endY=ecy-er+2*f,
+      width=clamp(f,1,2),color=CONFIG.COLORS.title,pixelated=false,enabled=false}),
+    createLine({x=ecx+er-2*f,y=ecy,z=2.5,endX=ecx+er+1*f,endY=ecy,
+      width=clamp(f,1,2),color=CONFIG.COLORS.title,pixelated=false,enabled=false}),
+    createLine({x=ecx,y=ecy+er-2*f,z=2.5,endX=ecx,endY=ecy+er+1*f,
+      width=clamp(f,1,2),color=CONFIG.COLORS.title,pixelated=false,enabled=false}),
+    createLine({x=ecx-er-1*f,y=ecy,z=2.5,endX=ecx-er+2*f,endY=ecy,
+      width=clamp(f,1,2),color=CONFIG.COLORS.title,pixelated=false,enabled=false}),
+  }
+  ui.entityArrowShaft=createLine({x=0,y=0,z=3,endX=0,endY=0,width=clamp(2*f,1,4),
+    color=CONFIG.COLORS.arrow,pixelated=false,enabled=false})
+  ui.entityArrowHead1=createLine({x=0,y=0,z=3,endX=0,endY=0,width=clamp(2*f,1,4),
+    color=CONFIG.COLORS.arrow,pixelated=false,enabled=false})
+  ui.entityArrowHead2=createLine({x=0,y=0,z=3,endX=0,endY=0,width=clamp(2*f,1,4),
+    color=CONFIG.COLORS.arrow,pixelated=false,enabled=false})
 
   -- Movement/ETA stays in the otherwise unused bottom-right corner.
   ui.moveBg=createRect({x=rightX,y=moveY,z=0,sizeX=pw,sizeY=moveH,
@@ -789,20 +811,15 @@ local function refreshEntityTracker()
   local nearest
   for _,entity in pairs(entities) do
     if type(entity)=="table" then
-      local wx,wy,wz=tonumber(entity.x),tonumber(entity.y),tonumber(entity.z)
-      local dx,dy,dz
-      if origin and wx and wy and wz then
-        dx,dy,dz=wx-origin.x,wy-origin.y,wz-origin.z
-      else
-        -- f/r/u are explicitly relative to the detector and are only a
-        -- fallback when AP omits absolute world coordinates.
-        dx,dy,dz=tonumber(entity.r),tonumber(entity.u),tonumber(entity.f)
-      end
+      -- scanEntities returns coordinates relative to the Environment Detector.
+      -- In worn glasses that detector follows the wearer, so x/y/z are offsets.
+      local dx=tonumber(entity.x) or tonumber(entity.r)
+      local dy=tonumber(entity.y) or tonumber(entity.u)
+      local dz=tonumber(entity.z) or tonumber(entity.f)
       if dx and dy and dz then
         local d=math.sqrt(dx*dx+dy*dy+dz*dz)
         if not nearest or d<nearest.distance then
-          nearest={distance=d,rx=dx,ry=dy,rz=dz,x=wx,y=wy,z=wz,
-            relativeOnly=not (origin and wx and wy and wz)}
+          nearest={distance=d,rx=dx,ry=dy,rz=dz}
         end
       end
     end
@@ -813,7 +830,9 @@ local function refreshEntityTracker()
   end
   state.entityTrack={filter=filter,available=true,found=true,range=scanRange,
     distance=nearest.distance,rx=nearest.rx,ry=nearest.ry,rz=nearest.rz,
-    x=nearest.x,y=nearest.y,z=nearest.z,relativeOnly=nearest.relativeOnly}
+    x=origin and origin.x+nearest.rx or nil,
+    y=origin and origin.y+nearest.ry or nil,
+    z=origin and origin.z+nearest.rz or nil}
 end
 
 local function updateSpeed(now)
@@ -1112,6 +1131,42 @@ local function drawArrow(layout, owner, target)
   setEnabled(ui.arrowShaft,true); setEnabled(ui.arrowHead1,true); setEnabled(ui.arrowHead2,true)
 end
 
+local function hideEntityArrow()
+  setEnabled(ui.entityCompassRing,false)
+  for _,tick in ipairs(ui.entityCompassTicks or {}) do setEnabled(tick,false) end
+  setEnabled(ui.entityArrowShaft,false)
+  setEnabled(ui.entityArrowHead1,false)
+  setEnabled(ui.entityArrowHead2,false)
+end
+
+local function drawEntityArrow(layout,owner,tracked)
+  local yaw=tonumber(owner and owner.yaw) or state.lastOwnerYaw
+  local dx,dz=tonumber(tracked and tracked.rx),tonumber(tracked and tracked.rz)
+  if not tracked or not tracked.found or not yaw or not dx or not dz then
+    hideEntityArrow()
+    return
+  end
+  local atan2=math.atan2 or function(y,x) return math.atan(y,x) end
+  local targetYaw=math.deg(atan2(-dx,dz))
+  local angle=math.rad(normalizeAngle(targetYaw-yaw))
+  local vx,vy=math.sin(angle),-math.cos(angle)
+  local px,py=-vy,vx
+  local cx,cy=ui.entityArrowCenterX,ui.entityArrowCenterY
+  local arrowLen,head=11*layout.font,4*layout.font
+  local tipX,tipY=cx+vx*arrowLen/2,cy+vy*arrowLen/2
+  local baseX,baseY=cx-vx*arrowLen/2,cy-vy*arrowLen/2
+  setLineGeometry(ui.entityArrowShaft,baseX,baseY,tipX,tipY)
+  setLineGeometry(ui.entityArrowHead1,tipX,tipY,
+    tipX-vx*head+px*head*0.65,tipY-vy*head+py*head*0.65)
+  setLineGeometry(ui.entityArrowHead2,tipX,tipY,
+    tipX-vx*head-px*head*0.65,tipY-vy*head-py*head*0.65)
+  setEnabled(ui.entityCompassRing,true)
+  for _,tick in ipairs(ui.entityCompassTicks or {}) do setEnabled(tick,true) end
+  setEnabled(ui.entityArrowShaft,true)
+  setEnabled(ui.entityArrowHead1,true)
+  setEnabled(ui.entityArrowHead2,true)
+end
+
 local function render(layout)
   local maxChars = math.max(8, math.floor((layout.panelW-10)/(6*layout.font)))
   local showPlayers=state.hud.players
@@ -1222,6 +1277,8 @@ local function render(layout)
       ((i==2 and entityTrack.found) and CONFIG.COLORS.tracked or CONFIG.COLORS.normal))
     setEnabled(obj,showEntity)
   end
+  if showEntity then drawEntityArrow(layout,state.owner,entityTrack)
+  else hideEntityArrow() end
 
   local t = state.blockTarget or (state.trackedName and state.details[state.trackedName] or nil)
   local targetDistance=nil
@@ -1313,7 +1370,8 @@ local function updateLoop()
     if layout.key~=state.layoutKey then rebuildUI(layout) end
     local now=os.epoch("utc")/1000
     local targetHudActive=state.hud.target or state.hud.compass or state.hud.movement
-    local ownerDataNeeded=state.hud.players or targetHudActive
+    local entityArrowActive=state.hud.entityTracker and state.entityTrack.found
+    local ownerDataNeeded=state.hud.players or targetHudActive or entityArrowActive
     local rosterNeeded=state.hud.players or (state.trackedName and targetHudActive)
     local targetDataNeeded=state.trackedName and targetHudActive
 
