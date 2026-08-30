@@ -16,19 +16,8 @@ status("CENTER CONTROLLER startup",colors.cyan)
 
 local function update()
   if not http then status("HTTP disabled; using installed copy",colors.yellow); return false end
-  local apiUrl="https://api.github.com/repos/"..REPOSITORY.."/commits/main?t="..
-    tostring(os.epoch("utc"))
-  local ok,response=pcall(http.get,{url=apiUrl,headers={
-    Accept="application/vnd.github+json",["User-Agent"]="CC-Airship-Updater",
-    ["Cache-Control"]="no-cache"}})
-  local sha
-  if ok and response then
-    local data=textutils.unserialiseJSON(response.readAll())
-    response.close()
-    if type(data)=="table" then sha=data.sha end
-  end
-  local url=sha and ("https://raw.githubusercontent.com/"..REPOSITORY.."/"..sha.."/"..REMOTE_PATH)
-    or ("https://raw.githubusercontent.com/"..REPOSITORY.."/main/"..REMOTE_PATH.."?t="..tostring(os.epoch("utc")))
+  local url="https://raw.githubusercontent.com/"..REPOSITORY.."/main/"..REMOTE_PATH..
+    "?t="..tostring(os.epoch("utc"))
   local download,reason=http.get(url)
   if not download then status("update failed: "..tostring(reason),colors.yellow); return false end
   local source=download.readAll(); download.close()

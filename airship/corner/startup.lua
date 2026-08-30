@@ -5,12 +5,8 @@ local REMOTE="airship/corner/main.lua"
 local LOCAL="/corner.lua"
 local function update()
   if not http then return false end
-  local ok,api=pcall(http.get,{url="https://api.github.com/repos/"..REPOSITORY.."/commits/main?t="..os.epoch("utc"),
-    headers={Accept="application/vnd.github+json",["User-Agent"]="CC-Airship-Corner-Updater",["Cache-Control"]="no-cache"}})
-  if not ok or not api then return false end
-  local data=textutils.unserialiseJSON(api.readAll()); api.close()
-  if not data or not data.sha then return false end
-  local response=http.get("https://raw.githubusercontent.com/"..REPOSITORY.."/"..data.sha.."/"..REMOTE)
+  local response=http.get("https://raw.githubusercontent.com/"..REPOSITORY.."/main/"..REMOTE..
+    "?t="..tostring(os.epoch("utc")))
   if not response then return false end
   local source=response.readAll(); response.close()
   if not source:find('ROLE_MARKER="CORNER_RELAY_MAIN"',1,true) then

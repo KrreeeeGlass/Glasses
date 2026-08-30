@@ -21,22 +21,11 @@ if touching==3 then
 end
 
 if not http then error("HTTP is disabled in the CC:Tweaked server config",0) end
-
-local apiUrl="https://api.github.com/repos/"..REPOSITORY.."/commits/main?t="..
-  tostring(os.epoch("utc"))
-local api,apiReason=http.get({url=apiUrl,headers={
-  Accept="application/vnd.github+json",["User-Agent"]="CC-Airship-Installer",
-  ["Cache-Control"]="no-cache"}})
-if not api then error("GitHub version check failed: "..tostring(apiReason),0) end
-local metadata=textutils.unserialiseJSON(api.readAll())
-api.close()
-local sha=type(metadata)=="table" and metadata.sha
-if type(sha)~="string" or #sha<7 then error("GitHub returned no commit SHA",0) end
-local base="https://raw.githubusercontent.com/"..REPOSITORY.."/"..sha.."/"..REMOTE_DIR
+local base="https://raw.githubusercontent.com/"..REPOSITORY.."/main/"..REMOTE_DIR
 
 for _,entry in ipairs(FILES) do
   write("Downloading "..entry.remote.."... ")
-  local response,reason=http.get(base..entry.remote)
+  local response,reason=http.get(base..entry.remote.."?t="..tostring(os.epoch("utc")))
   if not response then error("\nDownload failed: "..tostring(reason),0) end
   local source=response.readAll()
   response.close()
