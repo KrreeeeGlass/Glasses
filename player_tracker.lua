@@ -103,8 +103,8 @@ local state = {
   lastSpeedPos = nil,
   lastSpeedTime = nil,
   sable = {title="SABLE TELEMETRY",lines={},sender=nil,lastAt=nil},
-  hud = {players=true,target=true,compass=true,environment=true,movement=true,
-    sable=true,keyHelp=true},
+  hud = {players=true,target=true,compass=true,environment=true,entityTracker=true,
+    movement=true,sable=true,keyHelp=true},
   hudMenuOpen = false,
   hudMenuSelected = 1,
   trackedLastSeen = nil,
@@ -117,6 +117,7 @@ local HUD_MENU_ITEMS={
   {key="target",label="Target details"},
   {key="compass",label="Target compass"},
   {key="environment",label="Environment"},
+  {key="entityTracker",label="Entity tracker"},
   {key="movement",label="Movement / ETA"},
   {key="sable",label="Sable telemetry"},
   {key="keyHelp",label="Keyboard help"},
@@ -426,15 +427,27 @@ local function rebuildUI(layout)
   local moveY=layout.h-m-moveH
   local envW=pw*CONFIG.ENV_WIDTH_FACTOR
   local envX=m
-  local envH=lh*6+8*f
-  local envY=clamp(layout.h*CONFIG.ENV_LEFT_Y_RATIO,m,layout.h-m-envH)
+  local envH=lh*4+8*f
+  local entityH=lh*3+8*f
+  local envY=clamp(layout.h*CONFIG.ENV_LEFT_Y_RATIO,m,layout.h-m-envH-gap-entityH)
   ui.envBg=createRect({x=envX,y=envY,z=0,sizeX=envW,sizeY=envH,
     color=CONFIG.COLORS.panel,opacity=CONFIG.PANEL_OPACITY})
   ui.envAccent=createRect({x=envX,y=envY,z=0.4,sizeX=envW,sizeY=1.5*f,
     color=CONFIG.COLORS.tracked,opacity=0.95})
   ui.envLines={}
-  for i=1,6 do
+  for i=1,4 do
     ui.envLines[i]=createText({x=envX+pad,y=envY+4*f+lh*(i-1),z=1,content="",
+      fontSize=(i==1 and f or f*0.80),color=(i==1 and CONFIG.COLORS.title or CONFIG.COLORS.normal)})
+  end
+
+  local entityY=envY+envH+gap
+  ui.entityBg=createRect({x=envX,y=entityY,z=0,sizeX=envW,sizeY=entityH,
+    color=CONFIG.COLORS.panel,opacity=CONFIG.PANEL_OPACITY})
+  ui.entityAccent=createRect({x=envX,y=entityY,z=0.4,sizeX=envW,sizeY=1.5*f,
+    color=CONFIG.COLORS.arrow,opacity=0.95})
+  ui.entityLines={}
+  for i=1,3 do
+    ui.entityLines[i]=createText({x=envX+pad,y=entityY+4*f+lh*(i-1),z=1,content="",
       fontSize=(i==1 and f or f*0.80),color=(i==1 and CONFIG.COLORS.title or CONFIG.COLORS.normal)})
   end
 
@@ -474,7 +487,7 @@ local function rebuildUI(layout)
 
 
   -- Modal HUD visibility menu, available only while Keyboard Mode is open.
-  local menuRows=7
+  local menuRows=#HUD_MENU_ITEMS
   local menuW=clamp(layout.w*0.30,145*f,225*f)
   local menuH=lh*(menuRows+3)+10*f
   local menuX=(layout.w-menuW)/2
@@ -1161,47 +1174,53 @@ local function render(layout)
   local biome=(e.biome and (tostring(e.biome):match("[^:]+$") or tostring(e.biome))) or "unknown"
   local envLines
   if e.available==false then
-    envLines={"ENVIRONMENT","Detector unavailable","","","",""}
+    envLines={"ENVIRONMENT","Detector unavailable","",""}
   else
-    local entityLine,entityPosition
-    local filter=entityTrack.filter
-    local shortEntity=filter and (filter:match("[^:]+$") or filter) or nil
-    if not filter then
-      entityLine="Entity tracker: OFF"
-      entityPosition="$entitytrack namespace:mob"
-    elseif entityTrack.available==false then
-      entityLine="Entity scan unavailable"
-      entityPosition=abbreviate(entityTrack.error or filter,28)
-    elseif entityTrack.found then
-      local direction=entityTrack.relativeOnly and "" or
-        (" "..cardinalFromOffset(entityTrack.rx or 0,entityTrack.rz or 0))
-      entityLine=string.format("%s FOUND | %.1fm%s",shortEntity:upper(),
-        entityTrack.distance or 0,direction)
-      if entityTrack.x and entityTrack.y and entityTrack.z then
-        entityPosition=string.format("~XYZ: %d, %d, %d",round(entityTrack.x),round(entityTrack.y),round(entityTrack.z))
-      else
-        entityPosition=string.format("Offset: %.0f, %.0f, %.0f",entityTrack.rx or 0,entityTrack.ry or 0,entityTrack.rz or 0)
-      end
-    else
-      entityLine=string.format("%s: none within %dm",shortEntity,
-        entityTrack.range or CONFIG.ENTITY_SCAN_RANGE)
-      if filter=="nomansland:buddy" then
-        entityPosition=(biome=="mushroom_fields") and "Habitat found: search island" or
-          "Find: mushroom fields"
-      else
-        entityPosition="$entitytrack clear to disable"
-      end
-    end
     envLines={"ENVIRONMENT",abbreviate(dim,14).." | "..abbreviate(biome,16),
       formatClock(e.time).." | "..tostring(e.weather or "--"),
-      string.format("Light: block %s | sky %s",e.blockLight or "--",e.skyLight or "--"),
-      entityLine,entityPosition}
+      string.format("Light: block %s | sky %s",e.blockLight or "--",e.skyLight or "--")}
   end
   for i,obj in ipairs(ui.envLines or {}) do
-    local envColor=i==1 and CONFIG.COLORS.title or
-      ((i==5 and entityTrack.found) and CONFIG.COLORS.tracked or CONFIG.COLORS.normal)
-    setText(obj,envLines[i] or "",envColor)
+    setText(obj,envLines[i] or "",i==1 and CONFIG.COLORS.title or CONFIG.COLORS.normal)
     setEnabled(obj,showEnvironment)
+  end
+
+  local showEntity=state.hud.entityTracker
+  setEnabled(ui.entityBg,showEntity); setEnabled(ui.entityAccent,showEntity)
+  local filter=entityTrack.filter
+  local shortEntity=filter and (filter:match("[^:]+$") or filter) or nil
+  local entityLine,entityPosition
+  if not filter then
+    entityLine="Tracker disabled"
+    entityPosition="$entitytrack namespace:mob"
+  elseif entityTrack.available==false then
+    entityLine="Scan unavailable"
+    entityPosition=abbreviate(entityTrack.error or filter,28)
+  elseif entityTrack.found then
+    local direction=entityTrack.relativeOnly and "" or
+      (" "..cardinalFromOffset(entityTrack.rx or 0,entityTrack.rz or 0))
+    entityLine=string.format("%s FOUND | %.1fm%s",shortEntity:upper(),
+      entityTrack.distance or 0,direction)
+    if entityTrack.x and entityTrack.y and entityTrack.z then
+      entityPosition=string.format("XYZ: %d, %d, %d",round(entityTrack.x),round(entityTrack.y),round(entityTrack.z))
+    else
+      entityPosition=string.format("Offset: %.0f, %.0f, %.0f",entityTrack.rx or 0,entityTrack.ry or 0,entityTrack.rz or 0)
+    end
+  else
+    entityLine=string.format("%s: none within %dm",shortEntity,
+      entityTrack.range or CONFIG.ENTITY_SCAN_RANGE)
+    if filter=="nomansland:buddy" then
+      entityPosition=(biome=="mushroom_fields") and "Habitat found: search island" or
+        "Find: mushroom fields"
+    else
+      entityPosition="$entitytrack clear to disable"
+    end
+  end
+  local entityLines={"ENTITY TRACKER",entityLine,entityPosition}
+  for i,obj in ipairs(ui.entityLines or {}) do
+    setText(obj,entityLines[i] or "",i==1 and CONFIG.COLORS.title or
+      ((i==2 and entityTrack.found) and CONFIG.COLORS.tracked or CONFIG.COLORS.normal))
+    setEnabled(obj,showEntity)
   end
 
   local t = state.blockTarget or (state.trackedName and state.details[state.trackedName] or nil)
@@ -1323,7 +1342,7 @@ local function updateLoop()
       refreshEnvironment()
       lastEnvironment=now
     end
-    if state.hud.environment and
+    if state.hud.entityTracker and
        state.entityTrack.filter and
        (lastEntityScan==0 or now-lastEntityScan>=CONFIG.ENTITY_SCAN_SECONDS) then
       refreshEntityTracker()
