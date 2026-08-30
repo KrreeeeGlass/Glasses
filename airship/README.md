@@ -3,7 +3,7 @@
 Install on the dedicated ship computer:
 
 ```lua
-wget run https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/airship/install.lua
+wget run https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/airship/center/install.lua
 ```
 
 The installer places `/airship.lua` and `/startup.lua`, then reboots. Startup downloads the newest controller, rejects invalid Lua, preserves the last working copy if GitHub is unavailable, forces all visible thrusters to zero, and leaves the computer ready for a command.
@@ -11,7 +11,7 @@ The installer places `/airship.lua` and `/startup.lua`, then reboots. Startup do
 The normal layout uses one center controller and four corner relay computers. Each corner computer directly touches its three Create Propulsion thrusters and has a wireless/Ender modem. Install the corner relay on all four corner computers:
 
 ```lua
-wget run https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/airship/corner-install.lua
+wget run https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/airship/corner/install.lua
 ```
 
 No ID or pairing step is required. Each relay reboots, finds the center automatically, and releases the temporary binding if that center disappears.
