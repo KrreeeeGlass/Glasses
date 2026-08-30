@@ -18,7 +18,6 @@ local CONFIG = {
   ENVIRONMENT_SECONDS = 1.00,
   SPEED_SAMPLE_SECONDS = 0.10,
   BLOCK_TARGET_RANGE = 64,   -- Requested ray length; server config may clamp it.
-  BLOCK_TARGET_BUTTON = 3,   -- 1 attack, 2 use, 3 pick-block (middle mouse).
   CHAT_COMMAND = "$target", -- Hidden chat: $target X Y Z [dimension], or $target clear.
   STATE_FILE = "/player_tracker.settings", -- Persistent target across deaths/relogs.
   SAFE_MARGIN = 8,
@@ -1265,10 +1264,6 @@ local function inputLoop()
           state.selected=#state.players
           state.selectedName=state.players[state.selected]
         end
-      elseif event=="player_interaction" and a==CONFIG.BLOCK_TARGET_BUTTON then
-        -- World interaction events fire during normal gameplay, not while a
-        -- container GUI such as Keyboard Mode is open.
-        selectLookedAtBlock(b)
       end
     elseif event=="glasses_key_pressed" then
       local duration=tonumber(b) or 0
@@ -1315,18 +1310,10 @@ local function main()
     -- hidden so a completed check does not flash in the world.
     pcall(distanceDetector.setLaserVisibility,false)
   end
-  if keyboard and distanceDetector then
-    -- Configure this before opening the Keyboard container. Changing module
-    -- data from inside keyboard_open can make AP 0.8 close that container.
-    pcall(keyboard.setHandlingInteraction,CONFIG.BLOCK_TARGET_BUTTON,true)
-  end
   -- Batch all setters into one synchronization packet per frame. Leaving auto
   -- update enabled here causes dozens of packets and visible stutter.
   overlay.setAutoUpdate(false)
   local ok,err=pcall(function() parallel.waitForAny(updateLoop,inputLoop) end)
-  if keyboard and distanceDetector then
-    pcall(keyboard.setHandlingInteraction,CONFIG.BLOCK_TARGET_BUTTON,false)
-  end
   if distanceDetector then
     if laserWasVisible~=nil then pcall(distanceDetector.setLaserVisibility,laserWasVisible) end
   end
