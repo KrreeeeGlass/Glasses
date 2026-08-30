@@ -16,14 +16,10 @@ local CONFIG = {
   ROSTER_SECONDS = 1.00,     -- Full online-player scan (the expensive part).
   TRACKED_OFFLINE_GRACE_SECONDS = 6.0, -- Ignore brief detector lookup failures.
   ENVIRONMENT_SECONDS = 1.00,
-  ENTITY_SCAN_SECONDS = 3.00, -- Filtered entity scan; deliberately slower to avoid lag.
-  ENTITY_SCAN_RANGE = 64, -- Requested radius; automatically reduced to the server maximum.
-  DEFAULT_ENTITY_ID = "nomansland:buddy",
   SPEED_SAMPLE_SECONDS = 0.10,
   BLOCK_TARGET_RANGE = 64,   -- Requested ray length; server config may clamp it.
   BLOCK_TARGET_BUTTON = 3,   -- 1 attack, 2 use, 3 pick-block (middle mouse).
   CHAT_COMMAND = "$target", -- Hidden chat: $target X Y Z [dimension], or $target clear.
-  ENTITY_CHAT_COMMAND = "$entitytrack",
   STATE_FILE = "/player_tracker.settings", -- Persistent target across deaths/relogs.
   SAFE_MARGIN = 8,
   ENV_LEFT_Y_RATIO = 0.33,  -- Places Environment below the minimap/party cluster.
@@ -98,26 +94,23 @@ local state = {
   keyboardOpen = false,
   currentDimension = nil,
   environment = {},
-  entityTrack = {filter=CONFIG.DEFAULT_ENTITY_ID,available=false,found=false},
   speed = 0,
   lastSpeedPos = nil,
   lastSpeedTime = nil,
   sable = {title="SABLE TELEMETRY",lines={},sender=nil,lastAt=nil},
-  hud = {players=true,target=true,compass=true,environment=true,entityTracker=true,
+  hud = {players=true,target=true,compass=true,environment=true,
     movement=true,sable=true,keyHelp=true},
   hudMenuOpen = false,
   hudMenuSelected = 1,
   trackedLastSeen = nil,
   lastOwnerYaw = nil,
   detailCursor = 0,
-  entityScanRange = nil,
 }
 local HUD_MENU_ITEMS={
   {key="players",label="Player list"},
   {key="target",label="Target details"},
   {key="compass",label="Target compass"},
   {key="environment",label="Environment"},
-  {key="entityTracker",label="Entity tracker"},
   {key="movement",label="Movement / ETA"},
   {key="sable",label="Sable telemetry"},
   {key="keyHelp",label="Keyboard help"},
@@ -134,13 +127,6 @@ end
 
 local function normalizeAngle(degrees)
   return (degrees + 180) % 360 - 180
-end
-
-local function cardinalFromOffset(dx,dz)
-  local atan2=math.atan2 or function(y,x) return math.atan(y,x) end
-  local angle=(math.deg(atan2(dz,dx))+360)%360
-  local names={"E","SE","S","SW","W","NW","N","NE"}
-  return names[math.floor((angle+22.5)/45)%8+1]
 end
 
 local function normalizeDimension(value)
@@ -194,16 +180,6 @@ local function saveHudSettings()
   if not ok then state.warning="HUD save failed: "..tostring(err):sub(1,18) end
 end
 
-local function saveEntityTracker()
-  if state.entityTrack.filter then
-    settings.set("player_tracker.entity_filter",state.entityTrack.filter)
-  else
-    settings.set("player_tracker.entity_filter",false)
-  end
-  local ok,err=pcall(settings.save,CONFIG.STATE_FILE)
-  if not ok then state.warning="Entity tracker save failed: "..tostring(err):sub(1,18) end
-end
-
 local function loadTarget()
   pcall(settings.load,CONFIG.STATE_FILE)
   local savedHud=settings.get("player_tracker.hud")
@@ -211,13 +187,6 @@ local function loadTarget()
     for key,default in pairs(state.hud) do
       if type(savedHud[key])=="boolean" then state.hud[key]=savedHud[key] end
     end
-  end
-  local savedEntity=settings.get("player_tracker.entity_filter",CONFIG.DEFAULT_ENTITY_ID)
-  if savedEntity==false then savedEntity=nil end
-  if type(savedEntity)=="string" and savedEntity~="" then
-    state.entityTrack.filter=savedEntity
-  elseif savedEntity==nil then
-    state.entityTrack.filter=nil
   end
   local saved=settings.get("player_tracker.target")
   if type(saved)~="table" then return end
@@ -441,8 +410,7 @@ local function rebuildUI(layout)
   local envW=pw*CONFIG.ENV_WIDTH_FACTOR
   local envX=m
   local envH=lh*4+8*f
-  local entityH=lh*3+8*f
-  local envY=clamp(layout.h*CONFIG.ENV_LEFT_Y_RATIO,m,layout.h-m-envH-gap-entityH)
+  local envY=clamp(layout.h*CONFIG.ENV_LEFT_Y_RATIO,m,layout.h-m-envH)
   ui.envBg=createRect({x=envX,y=envY,z=0,sizeX=envW,sizeY=envH,
     color=CONFIG.COLORS.panel,opacity=CONFIG.PANEL_OPACITY})
   ui.envAccent=createRect({x=envX,y=envY,z=0.4,sizeX=envW,sizeY=1.5*f,
@@ -452,39 +420,6 @@ local function rebuildUI(layout)
     ui.envLines[i]=createText({x=envX+pad,y=envY+4*f+lh*(i-1),z=1,content="",
       fontSize=(i==1 and f or f*0.80),color=(i==1 and CONFIG.COLORS.title or CONFIG.COLORS.normal)})
   end
-
-  local entityY=envY+envH+gap
-  ui.entityBg=createRect({x=envX,y=entityY,z=0,sizeX=envW,sizeY=entityH,
-    color=CONFIG.COLORS.panel,opacity=CONFIG.PANEL_OPACITY})
-  ui.entityAccent=createRect({x=envX,y=entityY,z=0.4,sizeX=envW,sizeY=1.5*f,
-    color=CONFIG.COLORS.arrow,opacity=0.95})
-  ui.entityLines={}
-  for i=1,3 do
-    ui.entityLines[i]=createText({x=envX+pad,y=entityY+4*f+lh*(i-1),z=1,content="",
-      fontSize=(i==1 and f or f*0.80),color=(i==1 and CONFIG.COLORS.title or CONFIG.COLORS.normal)})
-  end
-  ui.entityArrowCenterX=envX+envW-17*f
-  ui.entityArrowCenterY=entityY+17*f
-  local ecx,ecy,er=ui.entityArrowCenterX,ui.entityArrowCenterY,11*f
-  ui.entityCompassRing=createCircle({x=ecx,y=ecy,z=2,radius=er,filled=false,
-    borderWidth=clamp(1.2*f,1,3),segments=36,pixelated=false,
-    color=CONFIG.COLORS.border,opacity=0.95,enabled=false})
-  ui.entityCompassTicks={
-    createLine({x=ecx,y=ecy-er-1*f,z=2.5,endX=ecx,endY=ecy-er+2*f,
-      width=clamp(f,1,2),color=CONFIG.COLORS.title,pixelated=false,enabled=false}),
-    createLine({x=ecx+er-2*f,y=ecy,z=2.5,endX=ecx+er+1*f,endY=ecy,
-      width=clamp(f,1,2),color=CONFIG.COLORS.title,pixelated=false,enabled=false}),
-    createLine({x=ecx,y=ecy+er-2*f,z=2.5,endX=ecx,endY=ecy+er+1*f,
-      width=clamp(f,1,2),color=CONFIG.COLORS.title,pixelated=false,enabled=false}),
-    createLine({x=ecx-er-1*f,y=ecy,z=2.5,endX=ecx-er+2*f,endY=ecy,
-      width=clamp(f,1,2),color=CONFIG.COLORS.title,pixelated=false,enabled=false}),
-  }
-  ui.entityArrowShaft=createLine({x=0,y=0,z=3,endX=0,endY=0,width=clamp(2*f,1,4),
-    color=CONFIG.COLORS.arrow,pixelated=false,enabled=false})
-  ui.entityArrowHead1=createLine({x=0,y=0,z=3,endX=0,endY=0,width=clamp(2*f,1,4),
-    color=CONFIG.COLORS.arrow,pixelated=false,enabled=false})
-  ui.entityArrowHead2=createLine({x=0,y=0,z=3,endX=0,endY=0,width=clamp(2*f,1,4),
-    color=CONFIG.COLORS.arrow,pixelated=false,enabled=false})
 
   -- Movement/ETA stays in the otherwise unused bottom-right corner.
   ui.moveBg=createRect({x=rightX,y=moveY,z=0,sizeX=pw,sizeY=moveH,
@@ -507,7 +442,6 @@ local function rebuildUI(layout)
     "Home / End: first / last",
     "M: HUD settings",
     "$target name | x y z | clear",
-    "$entitytrack mob | clear",
   }
   local keyH=lh*#keyLines+8*f
   local keyY=moveY-gap-keyH
@@ -788,74 +722,6 @@ local function refreshEnvironment()
   state.environment=e
 end
 
-local function refreshEntityTracker()
-  local filter=state.entityTrack.filter
-  if not filter then
-    state.entityTrack={filter=nil,available=true,found=false,disabled=true}
-    return
-  end
-  if not environmentDetector or type(environmentDetector.scanEntities)~="function" then
-    state.entityTrack={filter=filter,available=false,found=false,error="scan unavailable"}
-    return
-  end
-  local scanRange=state.entityScanRange or CONFIG.ENTITY_SCAN_RANGE
-  local entities,err
-  while scanRange>=1 do
-    entities,err=safeCall(environmentDetector.scanEntities,scanRange,false,filter)
-    if type(entities)=="table" then break end
-    local message=tostring(err or ""):lower()
-    if not (message:find("max",1,true) or message:find("radius",1,true) or
-       message:find("range",1,true)) then break end
-    -- AP normally includes the configured maximum in its error. Use the last
-    -- number present; otherwise halve the request until the server accepts it.
-    local reportedMax
-    for number in message:gmatch("%d+") do reportedMax=tonumber(number) end
-    local reduced=(reportedMax and reportedMax>0 and reportedMax<scanRange) and
-      reportedMax or math.floor(scanRange/2)
-    if reduced>=scanRange then reduced=scanRange-1 end
-    scanRange=reduced
-  end
-  if type(entities)~="table" then
-    state.entityTrack={filter=filter,available=false,found=false,error=tostring(err or "scan failed")}
-    return
-  end
-  state.entityScanRange=scanRange
-  local liveOwner=state.ownerName and safeCall(detector.getPlayer,state.ownerName)
-  if type(liveOwner)=="table" then state.owner=liveOwner end
-  local eyeX,eyeY,eyeZ=safeCall(overlay.getEyePosition)
-  if tonumber(eyeX) and tonumber(eyeY) and tonumber(eyeZ) then
-    state.eye={x=eyeX,y=eyeY,z=eyeZ}
-  end
-  local origin=state.eye or state.owner
-  local nearest
-  for _,entity in pairs(entities) do
-    if type(entity)=="table" then
-      local returnedId=type(entity.name)=="string" and entity.name:lower() or nil
-      local matches=filter:sub(1,1)=="#" or returnedId==filter
-      -- scanEntities returns coordinates relative to the Environment Detector.
-      -- In worn glasses that detector follows the wearer, so x/y/z are offsets.
-      local dx=tonumber(entity.x) or tonumber(entity.r)
-      local dy=tonumber(entity.y) or tonumber(entity.u)
-      local dz=tonumber(entity.z) or tonumber(entity.f)
-      if matches and dx and dy and dz then
-        local d=math.sqrt(dx*dx+dy*dy+dz*dz)
-        if not nearest or d<nearest.distance then
-          nearest={distance=d,rx=dx,ry=dy,rz=dz,actualId=returnedId}
-        end
-      end
-    end
-  end
-  if not nearest then
-    state.entityTrack={filter=filter,available=true,found=false,range=scanRange}
-    return
-  end
-  state.entityTrack={filter=filter,available=true,found=true,range=scanRange,
-    distance=nearest.distance,rx=nearest.rx,ry=nearest.ry,rz=nearest.rz,
-    x=origin and origin.x+nearest.rx or nil,
-    y=origin and origin.y+nearest.ry or nil,
-    z=origin and origin.z+nearest.rz or nil,actualId=nearest.actualId}
-end
-
 local function updateSpeed(now)
   local p=state.owner
   if not p or not tonumber(p.x) or not tonumber(p.y) or not tonumber(p.z) then return end
@@ -936,29 +802,6 @@ local function handleChatCommand(sender, message)
   -- Depending on the server/chat integration, the hidden-message marker may
   -- be present in the event text or already removed. Accept either form.
   local configured = CONFIG.CHAT_COMMAND:lower()
-  local entityConfigured=CONFIG.ENTITY_CHAT_COMMAND:lower()
-  if command==entityConfigured or command==entityConfigured:gsub("^%$","") then
-    local requested=(words[2] or ""):lower()
-    if requested=="" then
-      state.entityTrack.status="Usage: $entitytrack namespace:mob"
-      return
-    end
-    if requested=="clear" or requested=="off" then
-      state.entityTrack={filter=nil,available=true,found=false,disabled=true,
-        status="Entity tracker disabled"}
-      saveEntityTracker()
-      return
-    end
-    if not requested:find(":",1,true) then requested="minecraft:"..requested end
-    if not requested:match("^[a-z0-9_.-]+:[a-z0-9_./-]+$") then
-      state.entityTrack.status="Invalid entity ID"
-      return
-    end
-    state.entityTrack={filter=requested,available=true,found=false,
-      range=CONFIG.ENTITY_SCAN_RANGE,status="Tracking "..requested}
-    saveEntityTracker()
-    return
-  end
   if command ~= configured and command ~= configured:gsub("^%$", "") then return end
 
   if (words[2] or ""):lower() == "clear" then
@@ -1152,42 +995,6 @@ local function drawArrow(layout, owner, target)
   setEnabled(ui.arrowShaft,true); setEnabled(ui.arrowHead1,true); setEnabled(ui.arrowHead2,true)
 end
 
-local function hideEntityArrow()
-  setEnabled(ui.entityCompassRing,false)
-  for _,tick in ipairs(ui.entityCompassTicks or {}) do setEnabled(tick,false) end
-  setEnabled(ui.entityArrowShaft,false)
-  setEnabled(ui.entityArrowHead1,false)
-  setEnabled(ui.entityArrowHead2,false)
-end
-
-local function drawEntityArrow(layout,owner,tracked)
-  local yaw=tonumber(owner and owner.yaw) or state.lastOwnerYaw
-  local dx,dz=tonumber(tracked and tracked.rx),tonumber(tracked and tracked.rz)
-  if not tracked or not tracked.found or not yaw or not dx or not dz then
-    hideEntityArrow()
-    return
-  end
-  local atan2=math.atan2 or function(y,x) return math.atan(y,x) end
-  local targetYaw=math.deg(atan2(-dx,dz))
-  local angle=math.rad(normalizeAngle(targetYaw-yaw))
-  local vx,vy=math.sin(angle),-math.cos(angle)
-  local px,py=-vy,vx
-  local cx,cy=ui.entityArrowCenterX,ui.entityArrowCenterY
-  local arrowLen,head=11*layout.font,4*layout.font
-  local tipX,tipY=cx+vx*arrowLen/2,cy+vy*arrowLen/2
-  local baseX,baseY=cx-vx*arrowLen/2,cy-vy*arrowLen/2
-  setLineGeometry(ui.entityArrowShaft,baseX,baseY,tipX,tipY)
-  setLineGeometry(ui.entityArrowHead1,tipX,tipY,
-    tipX-vx*head+px*head*0.65,tipY-vy*head+py*head*0.65)
-  setLineGeometry(ui.entityArrowHead2,tipX,tipY,
-    tipX-vx*head-px*head*0.65,tipY-vy*head-py*head*0.65)
-  setEnabled(ui.entityCompassRing,true)
-  for _,tick in ipairs(ui.entityCompassTicks or {}) do setEnabled(tick,true) end
-  setEnabled(ui.entityArrowShaft,true)
-  setEnabled(ui.entityArrowHead1,true)
-  setEnabled(ui.entityArrowHead2,true)
-end
-
 local function render(layout)
   local maxChars = math.max(8, math.floor((layout.panelW-10)/(6*layout.font)))
   local showPlayers=state.hud.players
@@ -1243,7 +1050,6 @@ local function render(layout)
   end
 
   local e=state.environment or {}
-  local entityTrack=state.entityTrack or {}
   local showEnvironment=state.hud.environment
   setEnabled(ui.envBg,showEnvironment); setEnabled(ui.envAccent,showEnvironment)
   local dim=(e.dimension and (tostring(e.dimension):match("[^:]+$") or tostring(e.dimension))) or "unknown"
@@ -1260,46 +1066,6 @@ local function render(layout)
     setText(obj,envLines[i] or "",i==1 and CONFIG.COLORS.title or CONFIG.COLORS.normal)
     setEnabled(obj,showEnvironment)
   end
-
-  local showEntity=state.hud.entityTracker
-  setEnabled(ui.entityBg,showEntity); setEnabled(ui.entityAccent,showEntity)
-  local filter=entityTrack.filter
-  local shortEntity=filter and (filter:match("[^:]+$") or filter) or nil
-  local entityLine,entityPosition
-  if not filter then
-    entityLine="Tracker disabled"
-    entityPosition="$entitytrack namespace:mob"
-  elseif entityTrack.available==false then
-    entityLine="Scan unavailable"
-    entityPosition=abbreviate(entityTrack.error or filter,28)
-  elseif entityTrack.found then
-    local direction=entityTrack.relativeOnly and "" or
-      (" "..cardinalFromOffset(entityTrack.rx or 0,entityTrack.rz or 0))
-    entityLine=string.format("%s FOUND | %.1fm%s",shortEntity:upper(),
-      entityTrack.distance or 0,direction)
-    if entityTrack.x and entityTrack.y and entityTrack.z then
-      entityPosition=string.format("XYZ: %d, %d, %d",round(entityTrack.x),round(entityTrack.y),round(entityTrack.z))
-    else
-      entityPosition=string.format("Offset: %.0f, %.0f, %.0f",entityTrack.rx or 0,entityTrack.ry or 0,entityTrack.rz or 0)
-    end
-  else
-    entityLine=string.format("%s: none within %dm",shortEntity,
-      entityTrack.range or CONFIG.ENTITY_SCAN_RANGE)
-    if filter=="nomansland:buddy" then
-      entityPosition=(biome=="mushroom_fields") and "Habitat found: search island" or
-        "Find: mushroom fields"
-    else
-      entityPosition="$entitytrack clear to disable"
-    end
-  end
-  local entityLines={"ENTITY TRACKER",entityLine,entityPosition}
-  for i,obj in ipairs(ui.entityLines or {}) do
-    setText(obj,entityLines[i] or "",i==1 and CONFIG.COLORS.title or
-      ((i==2 and entityTrack.found) and CONFIG.COLORS.tracked or CONFIG.COLORS.normal))
-    setEnabled(obj,showEntity)
-  end
-  if showEntity then drawEntityArrow(layout,state.owner,entityTrack)
-  else hideEntityArrow() end
 
   local t = state.blockTarget or (state.trackedName and state.details[state.trackedName] or nil)
   local targetDistance=nil
@@ -1385,14 +1151,12 @@ local function updateLoop()
   local lastDetectorRefresh=0
   local lastKeyboardCheck=0
   local lastEnvironment=0
-  local lastEntityScan=0
   while true do
     local layout=getLayout()
     if layout.key~=state.layoutKey then rebuildUI(layout) end
     local now=os.epoch("utc")/1000
     local targetHudActive=state.hud.target or state.hud.compass or state.hud.movement
-    local entityArrowActive=state.hud.entityTracker and state.entityTrack.found
-    local ownerDataNeeded=state.hud.players or targetHudActive or entityArrowActive
+    local ownerDataNeeded=state.hud.players or targetHudActive
     local rosterNeeded=state.hud.players or (state.trackedName and targetHudActive)
     local targetDataNeeded=state.trackedName and targetHudActive
 
@@ -1420,15 +1184,6 @@ local function updateLoop()
        (lastEnvironment==0 or now-lastEnvironment>=CONFIG.ENVIRONMENT_SECONDS) then
       refreshEnvironment()
       lastEnvironment=now
-    end
-    -- IMPORTANT FOR FUTURE SCANNERS: AP world/peripheral scans can force-close
-    -- the Keyboard Module container when they synchronize module data. Never
-    -- run scanEntities (or future geo/distance scans) during keyboard capture.
-    if state.hud.entityTracker and not state.keyboardOpen and not state.hudMenuOpen and
-       state.entityTrack.filter and
-       (lastEntityScan==0 or now-lastEntityScan>=CONFIG.ENTITY_SCAN_SECONDS) then
-      refreshEntityTracker()
-      lastEntityScan=now
     end
     if keyboard and (lastKeyboardCheck==0 or
        now-lastKeyboardCheck>=CONFIG.KEYBOARD_STATE_SECONDS) then
