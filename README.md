@@ -18,5 +18,6 @@ The installer downloads `player_tracker.lua` and `startup.lua`, then reboots. On
 - `startup.lua` — updater and automatic launcher
 - `install.lua` — first-time one-command installer
 - `sable_hud_sender.lua` — example telemetry sender for a Sable ship computer
+- `clear_overlay.lua` — removes overlay objects left behind by stopped scripts
 
 The Sable sender belongs on the ship computer, not in the glasses.
