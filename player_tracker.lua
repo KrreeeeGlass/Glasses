@@ -822,19 +822,25 @@ local function refreshEntityTracker()
   state.entityScanRange=scanRange
   local liveOwner=state.ownerName and safeCall(detector.getPlayer,state.ownerName)
   if type(liveOwner)=="table" then state.owner=liveOwner end
-  local origin=state.owner or state.eye
+  local eyeX,eyeY,eyeZ=safeCall(overlay.getEyePosition)
+  if tonumber(eyeX) and tonumber(eyeY) and tonumber(eyeZ) then
+    state.eye={x=eyeX,y=eyeY,z=eyeZ}
+  end
+  local origin=state.eye or state.owner
   local nearest
   for _,entity in pairs(entities) do
     if type(entity)=="table" then
+      local returnedId=type(entity.name)=="string" and entity.name:lower() or nil
+      local matches=filter:sub(1,1)=="#" or returnedId==filter
       -- scanEntities returns coordinates relative to the Environment Detector.
       -- In worn glasses that detector follows the wearer, so x/y/z are offsets.
       local dx=tonumber(entity.x) or tonumber(entity.r)
       local dy=tonumber(entity.y) or tonumber(entity.u)
       local dz=tonumber(entity.z) or tonumber(entity.f)
-      if dx and dy and dz then
+      if matches and dx and dy and dz then
         local d=math.sqrt(dx*dx+dy*dy+dz*dz)
         if not nearest or d<nearest.distance then
-          nearest={distance=d,rx=dx,ry=dy,rz=dz}
+          nearest={distance=d,rx=dx,ry=dy,rz=dz,actualId=returnedId}
         end
       end
     end
@@ -847,7 +853,7 @@ local function refreshEntityTracker()
     distance=nearest.distance,rx=nearest.rx,ry=nearest.ry,rz=nearest.rz,
     x=origin and origin.x+nearest.rx or nil,
     y=origin and origin.y+nearest.ry or nil,
-    z=origin and origin.z+nearest.rz or nil}
+    z=origin and origin.z+nearest.rz or nil,actualId=nearest.actualId}
 end
 
 local function updateSpeed(now)
