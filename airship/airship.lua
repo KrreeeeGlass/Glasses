@@ -8,6 +8,7 @@
 local VERSION = "1.0.0"
 local SETTINGS_FILE = "/.ship_autopilot.settings"
 local CONTROL_DT = 0.10
+local REMOTE_PROTOCOL = "sable_airship_thrusters_v1"
 
 local DEFAULTS = {
   cruiseY = 350,
@@ -94,6 +95,31 @@ local function discover()
       if THRUSTER_TYPES[kind] then
         thrusters[name]={name=name,kind=kind,device=peripheral.wrap(name)}
         break
+      end
+    end
+  end
+
+  -- Corner relay computers advertise their locally attached thrusters over Rednet.
+  local wireless=peripheral.find("modem",function(_,m) return m.isWireless and m.isWireless() end)
+  if wireless then
+    local modemName=peripheral.getName(wireless)
+    if not rednet.isOpen(modemName) then rednet.open(modemName) end
+    rednet.broadcast({type="discover",controllerId=os.getComputerID()},REMOTE_PROTOCOL)
+    local deadline=os.clock()+1.25
+    while os.clock()<deadline do
+      local sender,msg=rednet.receive(REMOTE_PROTOCOL,math.max(0.05,deadline-os.clock()))
+      if sender and type(msg)=="table" and msg.type=="advertise" and type(msg.thrusters)=="table" then
+        for _,remote in ipairs(msg.thrusters) do
+          if type(remote.name)=="string" and THRUSTER_TYPES[remote.kind] then
+            local networkName="corner_"..sender.."_"..remote.name
+            local remoteName=remote.name
+            thrusters[networkName]={name=networkName,kind=remote.kind,remoteId=sender,
+              device={setPowerNormalized=function(power)
+                rednet.send(sender,{type="set",controllerId=os.getComputerID(),
+                  name=remoteName,power=power},REMOTE_PROTOCOL)
+              end}}
+          end
+        end
       end
     end
   end

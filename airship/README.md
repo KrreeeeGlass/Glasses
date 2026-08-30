@@ -8,7 +8,13 @@ wget run https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/airship/ins
 
 The installer places `/airship.lua` and `/startup.lua`, then reboots. Startup downloads the newest controller, rejects invalid Lua, preserves the last working copy if GitHub is unavailable, forces all visible thrusters to zero, and leaves the computer ready for a command.
 
-The computer needs a CC wired-modem network to expose every Create Propulsion thruster. Wireless or Ender modems carry messages but do not expose remote peripherals. Keep a wireless/Ender modem on the computer for GPS and SABLE Smart Glasses telemetry.
+The normal layout uses one center controller and four corner relay computers. Each corner computer directly touches its three Create Propulsion thrusters and has a wireless/Ender modem. Install the corner relay on all four corner computers, giving each relay the center computer's ID:
+
+```lua
+wget run https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/airship/corner-install.lua
+```
+
+The center computer uses the main installer shown above. Its wireless/Ender modem handles corner commands, GPS, and SABLE Smart Glasses telemetry.
 
 Commands:
 
