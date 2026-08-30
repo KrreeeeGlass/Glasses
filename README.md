@@ -21,3 +21,7 @@ The installer downloads `player_tracker.lua` and `startup.lua`, then reboots. On
 - `clear_overlay.lua` — removes overlay objects left behind by stopped scripts
 
 The Sable sender belongs on the ship computer, not in the glasses.
+
+## Airship autopilot
+
+The Create Propulsion airship controller is isolated in [`airship/`](airship/README.md) and has its own installer and updater. It does not replace the Smart Glasses installation.
