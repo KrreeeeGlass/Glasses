@@ -17,4 +17,6 @@ for _,entry in ipairs(FILES) do
   if fs.exists(entry.path) then fs.delete(entry.path) end
   fs.move(temp,entry.path); print("done")
 end
-print("Installed. Run 'corner setup CENTER_ID', then reboot.")
+print("Installed. Rebooting into automatic relay...")
+sleep(1)
+os.reboot()
