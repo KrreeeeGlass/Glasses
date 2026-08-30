@@ -1,5 +1,15 @@
 # Create Propulsion Airship Autopilot
 
+## Universal installer (recommended)
+
+Run this exact same command on the center and all four corner computers:
+
+```lua
+wget run https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/airship/unified/install.lua
+```
+
+The identical startup detects the role from local hardware: zero touching thrusters is the center controller; three touching thrusters is a corner relay.
+
 Install on the dedicated ship computer:
 
 ```lua

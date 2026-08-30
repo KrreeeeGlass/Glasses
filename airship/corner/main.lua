@@ -2,7 +2,6 @@
 local ROLE_MARKER="CORNER_RELAY_MAIN"
 local VERSION="1.3.0"
 local PROTOCOL="sable_airship_thrusters_v1"
-local SETTINGS_FILE="/.airship_corner_identity"
 local WATCHDOG_SECONDS=0.60
 local RELEASE_SECONDS=3.0
 local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
@@ -12,13 +11,9 @@ local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
 local controllerId=nil
 local thrusters={}
 
-settings.load(SETTINGS_FILE)
-local relayId=settings.get("relay_id")
-if type(relayId)~="string" or relayId=="" then
-  relayId=tostring(os.epoch("utc")).."-"..tostring(math.random(100000,999999))
-  settings.set("relay_id",relayId)
-  settings.save(SETTINGS_FILE)
-end
+-- The three touching side names form a stable physical identity. With all
+-- computers facing the same way, each corner has a unique side combination.
+local relayId=nil
 
 local function advertisement()
   local advertised={}
@@ -54,8 +49,11 @@ local function openWireless()
 end
 
 discover(); stop(); openWireless()
-local count=0 for _ in pairs(thrusters) do count=count+1 end
+local count,names=0,{}
+for name in pairs(thrusters) do count=count+1; names[#names+1]=name end
 if count~=3 then error("Expected 3 touching thrusters; found "..count,0) end
+table.sort(names)
+relayId=table.concat(names,"_")
 print("Corner relay "..VERSION.." | AUTO PAIR | 3 thrusters")
 print("Relay ID: "..relayId)
 print("Waiting for center controller...")
