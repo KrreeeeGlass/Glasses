@@ -144,10 +144,23 @@ local function cardinalFromOffset(dx,dz)
 end
 
 local function normalizeDimension(value)
-  if type(value)~="string" or value=="" then return nil end
-  value=value:lower()
+  if value==nil then return nil end
+  value=tostring(value):lower()
+  if value=="" then return nil end
+  -- Some AP/NeoForge builds stringify a ResourceKey wrapper instead of
+  -- returning only the dimension ID. The final namespaced ID is the dimension.
+  local extracted
+  for id in value:gmatch("[%w_.-]+:[%w_./-]+") do extracted=id end
+  if extracted then return extracted end
   if not value:find(":",1,true) then value="minecraft:"..value end
   return value
+end
+
+local function dimensionsMatch(a,b)
+  local da,db=normalizeDimension(a),normalizeDimension(b)
+  -- Unknown is not evidence of a dimension mismatch. This prevents temporary
+  -- AP omissions from disabling distance while preserving real mismatches.
+  return not da or not db or da==db
 end
 
 local function distance(a, b)
@@ -1071,7 +1084,7 @@ end
 local function rowStatus(name)
   local p, owner = state.details[name], state.owner
   if not p then return " ?" end
-  if owner and p.dimension == owner.dimension then
+  if owner and dimensionsMatch(p.dimension,owner.dimension) then
     return string.format(" %.0fm", distance(owner, p))
   end
   if p.dimension then
@@ -1283,7 +1296,7 @@ local function render(layout)
   local t = state.blockTarget or (state.trackedName and state.details[state.trackedName] or nil)
   local targetDistance=nil
   local ownerDim=normalizeDimension(state.owner and state.owner.dimension) or state.currentDimension
-  if t and state.owner and ownerDim==normalizeDimension(t.dimension) then
+  if t and state.owner and dimensionsMatch(ownerDim,t.dimension) then
     local targetPos=t
     if state.blockTarget then targetPos={x=t.x+0.5,y=t.y+0.5,z=t.z+0.5} end
     targetDistance=distance(state.owner,targetPos)
@@ -1326,8 +1339,8 @@ local function render(layout)
     lines={"TARGET: "..state.trackedName,"Unavailable / offline","","","","",state.warning or ""}
   else
     local dim=tostring(t.dimension or "unknown"):match("[^:]+$") or tostring(t.dimension or "unknown")
-    local same=state.owner and
-      (normalizeDimension(state.owner.dimension) or state.currentDimension)==normalizeDimension(t.dimension)
+    local same=state.owner and dimensionsMatch(
+      normalizeDimension(state.owner.dimension) or state.currentDimension,t.dimension)
     lines={"TARGET: "..state.trackedName,
       string.format("XYZ: %d, %d, %d",round(t.x),round(t.y),round(t.z)),
       "Dimension: "..dim,
