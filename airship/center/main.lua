@@ -6,7 +6,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:       ship_autopilot goto X Y Z
 -- Other:     ship_autopilot status | hold | abort | setup | list
 
-local VERSION = "1.2.0"
+local VERSION = "1.3.0"
 local SETTINGS_FILE = "/.ship_autopilot.settings"
 local CONTROL_DT = 0.10
 local REMOTE_PROTOCOL = "sable_airship_thrusters_v1"
@@ -118,16 +118,18 @@ local function discover()
         nextBroadcast=os.clock()+0.50
       end
       local sender,msg=rednet.receive(REMOTE_PROTOCOL,0.20)
-      if sender and type(msg)=="table" and msg.type=="advertise" and type(msg.thrusters)=="table" then
-        seenRelays[sender]=true
+      if sender and type(msg)=="table" and msg.type=="advertise" and
+          type(msg.relayId)=="string" and type(msg.thrusters)=="table" then
+        local relayId=msg.relayId
+        seenRelays[relayId]=true
         for _,remote in ipairs(msg.thrusters) do
           -- The relay only advertises locally verified Create Propulsion thrusters.
           if type(remote.name)=="string" and type(remote.kind)=="string" then
-            local networkName="corner_"..sender.."_"..remote.name
+            local networkName="corner_"..relayId.."_"..remote.name
             local remoteName=remote.name
-            thrusters[networkName]={name=networkName,kind=remote.kind,remoteId=sender,
+            thrusters[networkName]={name=networkName,kind=remote.kind,relayId=relayId,
               device={setPowerNormalized=function(power)
-                rednet.send(sender,{type="set",controllerId=os.getComputerID(),
+                rednet.broadcast({type="set",controllerId=os.getComputerID(),targetRelay=relayId,
                   name=remoteName,power=power},REMOTE_PROTOCOL)
               end}}
           end

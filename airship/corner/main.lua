@@ -1,7 +1,8 @@
 -- Wireless corner actuator for the Create Propulsion airship autopilot.
 local ROLE_MARKER="CORNER_RELAY_MAIN"
-local VERSION="1.2.0"
+local VERSION="1.3.0"
 local PROTOCOL="sable_airship_thrusters_v1"
+local SETTINGS_FILE="/.airship_corner_identity"
 local WATCHDOG_SECONDS=0.60
 local RELEASE_SECONDS=3.0
 local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
@@ -11,10 +12,18 @@ local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
 local controllerId=nil
 local thrusters={}
 
+settings.load(SETTINGS_FILE)
+local relayId=settings.get("relay_id")
+if type(relayId)~="string" or relayId=="" then
+  relayId=tostring(os.epoch("utc")).."-"..tostring(math.random(100000,999999))
+  settings.set("relay_id",relayId)
+  settings.save(SETTINGS_FILE)
+end
+
 local function advertisement()
   local advertised={}
   for name,t in pairs(thrusters) do advertised[#advertised+1]={name=name,kind=t.kind} end
-  return {type="advertise",thrusters=advertised,version=VERSION}
+  return {type="advertise",relayId=relayId,thrusters=advertised,version=VERSION}
 end
 
 local function discover()
@@ -48,6 +57,7 @@ discover(); stop(); openWireless()
 local count=0 for _ in pairs(thrusters) do count=count+1 end
 if count~=3 then error("Expected 3 touching thrusters; found "..count,0) end
 print("Corner relay "..VERSION.." | AUTO PAIR | 3 thrusters")
+print("Relay ID: "..relayId)
 print("Waiting for center controller...")
 
 local lastCommand=os.clock()
@@ -63,15 +73,18 @@ while true do
       if controllerId~=sender then print("Bound to center #"..sender) end
       controllerId=sender
       lastCommand=os.clock()
-      rednet.send(sender,advertisement(),PROTOCOL)
-    elseif sender==controllerId and msg.type=="set" and msg.controllerId==controllerId and type(msg.name)=="string" then
+      rednet.broadcast(advertisement(),PROTOCOL)
+    elseif sender==controllerId and msg.type=="set" and msg.controllerId==controllerId and
+        msg.targetRelay==relayId and type(msg.name)=="string" then
       local t=thrusters[msg.name]
       if t then
         local power=math.max(0,math.min(1,tonumber(msg.power) or 0))
         local ok=pcall(t.device.setPowerNormalized,power)
         if ok then lastCommand=os.clock() else stop() end
       end
-    elseif sender==controllerId and msg.type=="stop" then stop(); lastCommand=os.clock() end
+    elseif sender==controllerId and msg.type=="stop" and msg.targetRelay==relayId then
+      stop(); lastCommand=os.clock()
+    end
   end
   if os.clock()-lastCommand>WATCHDOG_SECONDS then stop() end
   if controllerId and os.clock()-lastCommand>RELEASE_SECONDS then
