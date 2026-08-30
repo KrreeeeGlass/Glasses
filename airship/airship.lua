@@ -5,7 +5,7 @@
 -- Fly:       ship_autopilot goto X Y Z
 -- Other:     ship_autopilot status | hold | abort | setup | list
 
-local VERSION = "1.0.0"
+local VERSION = "1.1.0"
 local SETTINGS_FILE = "/.ship_autopilot.settings"
 local CONTROL_DT = 0.10
 local REMOTE_PROTOCOL = "sable_airship_thrusters_v1"
@@ -37,6 +37,7 @@ local DEFAULTS = {
 local cfg, destination, phase, message
 local nav, gimbal
 local thrusters = {}
+local relayCount = 0
 local running = true
 local lastPosition, lastPositionTime
 local velocity = {x=0,y=0,z=0}
@@ -89,6 +90,7 @@ local function discover()
   nav=peripheral.find("navigation_table")
   gimbal=peripheral.find("gimbal_sensor")
   thrusters={}
+  relayCount=0
   for _,name in ipairs(peripheral.getNames()) do
     local types={peripheral.getType(name)}
     for _,kind in ipairs(types) do
@@ -104,13 +106,20 @@ local function discover()
   if wireless then
     local modemName=peripheral.getName(wireless)
     if not rednet.isOpen(modemName) then rednet.open(modemName) end
-    rednet.broadcast({type="discover",controllerId=os.getComputerID()},REMOTE_PROTOCOL)
-    local deadline=os.clock()+1.25
+    local seenRelays={}
+    local deadline=os.clock()+3.0
+    local nextBroadcast=0
     while os.clock()<deadline do
-      local sender,msg=rednet.receive(REMOTE_PROTOCOL,math.max(0.05,deadline-os.clock()))
+      if os.clock()>=nextBroadcast then
+        rednet.broadcast({type="discover",controllerId=os.getComputerID()},REMOTE_PROTOCOL)
+        nextBroadcast=os.clock()+0.50
+      end
+      local sender,msg=rednet.receive(REMOTE_PROTOCOL,0.20)
       if sender and type(msg)=="table" and msg.type=="advertise" and type(msg.thrusters)=="table" then
+        seenRelays[sender]=true
         for _,remote in ipairs(msg.thrusters) do
-          if type(remote.name)=="string" and THRUSTER_TYPES[remote.kind] then
+          -- The relay only advertises locally verified Create Propulsion thrusters.
+          if type(remote.name)=="string" and type(remote.kind)=="string" then
             local networkName="corner_"..sender.."_"..remote.name
             local remoteName=remote.name
             thrusters[networkName]={name=networkName,kind=remote.kind,remoteId=sender,
@@ -122,6 +131,7 @@ local function discover()
         end
       end
     end
+    for _ in pairs(seenRelays) do relayCount=relayCount+1 end
   end
 end
 
@@ -133,6 +143,7 @@ local function listPeripherals()
   discover()
   print("Navigation table: "..(nav and "FOUND" or "MISSING"))
   print("Gimbal sensor:   "..(gimbal and "FOUND" or "optional / missing"))
+  print("Corner relays:   "..relayCount.." / 4")
   local names={} for n in pairs(thrusters) do names[#names+1]=n end table.sort(names)
   print("Thrusters ("..tostring(#names).."): ")
   for _,n in ipairs(names) do print("  "..n.." ["..thrusters[n].kind.."]") end
@@ -148,7 +159,7 @@ end
 local function setup()
   allStop(); discover(); listPeripherals()
   local names={} for n in pairs(thrusters) do names[#names+1]=n end table.sort(names)
-  if #names==0 then error("No Create Propulsion thrusters are visible. Connect wired modems and cables first.",0) end
+  if #names==0 then error("No thrusters found. Make sure all four wireless corner relays are running.",0) end
   print("\nFor every thruster enter the FORCE it applies to the ship.")
   print("Directions use the ship/body frame at yaw 0: +x east, -x west, +z south, -z north, +y up.")
   print("Corner x/z is -1 or +1. Enter 0/0 for a vertical thruster; yaw moment is x*fz-z*fx.")
