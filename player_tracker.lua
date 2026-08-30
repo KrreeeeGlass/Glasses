@@ -319,11 +319,6 @@ local function rebuildUI(layout)
   local listH = lh * (layout.rows + 2) + 6*f
   local rightX = layout.w - m - pw
 
-  -- TEMPORARY update diagnostic. Remove after updater troubleshooting.
-  ui.updateDiagnostic=createText({x=layout.w/2,y=m+18*f,z=20,
-    content="UPDATE TEST 2 - 9F3A",fontSize=f*1.15,
-    color=0xFF4FD8,center=true,shadow=true})
-
   -- Both panels form one top-right column: player list first, target below.
   ui.listBg = createRect({x=rightX, y=m, z=0, sizeX=pw, sizeY=listH,
     color=CONFIG.COLORS.panel, opacity=CONFIG.PANEL_OPACITY})
