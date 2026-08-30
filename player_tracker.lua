@@ -16,13 +16,14 @@ local CONFIG = {
   ROSTER_SECONDS = 1.00,     -- Full online-player scan (the expensive part).
   TRACKED_OFFLINE_GRACE_SECONDS = 6.0, -- Ignore brief detector lookup failures.
   ENVIRONMENT_SECONDS = 1.00,
-  BUDDY_SCAN_SECONDS = 3.00, -- Filtered entity scan; deliberately slower to avoid lag.
-  BUDDY_SCAN_RANGE = 64,
-  BUDDY_ENTITY_ID = "nomansland:buddy",
+  ENTITY_SCAN_SECONDS = 3.00, -- Filtered entity scan; deliberately slower to avoid lag.
+  ENTITY_SCAN_RANGE = 64,
+  DEFAULT_ENTITY_ID = "nomansland:buddy",
   SPEED_SAMPLE_SECONDS = 0.10,
   BLOCK_TARGET_RANGE = 64,   -- Requested ray length; server config may clamp it.
   BLOCK_TARGET_BUTTON = 3,   -- 1 attack, 2 use, 3 pick-block (middle mouse).
   CHAT_COMMAND = "$target", -- Hidden chat: $target X Y Z [dimension], or $target clear.
+  ENTITY_CHAT_COMMAND = "$entitytrack",
   STATE_FILE = "/player_tracker.settings", -- Persistent target across deaths/relogs.
   SAFE_MARGIN = 8,
   ENV_LEFT_Y_RATIO = 0.33,  -- Places Environment below the minimap/party cluster.
@@ -97,7 +98,7 @@ local state = {
   keyboardOpen = false,
   currentDimension = nil,
   environment = {},
-  buddy = {available=false,found=false},
+  entityTrack = {filter=CONFIG.DEFAULT_ENTITY_ID,available=false,found=false},
   speed = 0,
   lastSpeedPos = nil,
   lastSpeedTime = nil,
@@ -178,6 +179,16 @@ local function saveHudSettings()
   if not ok then state.warning="HUD save failed: "..tostring(err):sub(1,18) end
 end
 
+local function saveEntityTracker()
+  if state.entityTrack.filter then
+    settings.set("player_tracker.entity_filter",state.entityTrack.filter)
+  else
+    settings.set("player_tracker.entity_filter",false)
+  end
+  local ok,err=pcall(settings.save,CONFIG.STATE_FILE)
+  if not ok then state.warning="Entity tracker save failed: "..tostring(err):sub(1,18) end
+end
+
 local function loadTarget()
   pcall(settings.load,CONFIG.STATE_FILE)
   local savedHud=settings.get("player_tracker.hud")
@@ -185,6 +196,13 @@ local function loadTarget()
     for key,default in pairs(state.hud) do
       if type(savedHud[key])=="boolean" then state.hud[key]=savedHud[key] end
     end
+  end
+  local savedEntity=settings.get("player_tracker.entity_filter",CONFIG.DEFAULT_ENTITY_ID)
+  if savedEntity==false then savedEntity=nil end
+  if type(savedEntity)=="string" and savedEntity~="" then
+    state.entityTrack.filter=savedEntity
+  elseif savedEntity==nil then
+    state.entityTrack.filter=nil
   end
   local saved=settings.get("player_tracker.target")
   if type(saved)~="table" then return end
@@ -719,15 +737,20 @@ local function refreshEnvironment()
   state.environment=e
 end
 
-local function refreshBuddy()
+local function refreshEntityTracker()
+  local filter=state.entityTrack.filter
+  if not filter then
+    state.entityTrack={filter=nil,available=true,found=false,disabled=true}
+    return
+  end
   if not environmentDetector or type(environmentDetector.scanEntities)~="function" then
-    state.buddy={available=false,found=false,error="scan unavailable"}
+    state.entityTrack={filter=filter,available=false,found=false,error="scan unavailable"}
     return
   end
   local entities,err=safeCall(environmentDetector.scanEntities,
-    CONFIG.BUDDY_SCAN_RANGE,false,CONFIG.BUDDY_ENTITY_ID)
+    CONFIG.ENTITY_SCAN_RANGE,false,filter)
   if type(entities)~="table" then
-    state.buddy={available=false,found=false,error=tostring(err or "scan failed")}
+    state.entityTrack={filter=filter,available=false,found=false,error=tostring(err or "scan failed")}
     return
   end
   local nearest,nearestDistance
@@ -743,7 +766,7 @@ local function refreshBuddy()
     end
   end
   if not nearest then
-    state.buddy={available=true,found=false,range=CONFIG.BUDDY_SCAN_RANGE}
+    state.entityTrack={filter=filter,available=true,found=false,range=CONFIG.ENTITY_SCAN_RANGE}
     return
   end
   local rx=tonumber(nearest.x or nearest.r) or 0
@@ -754,7 +777,7 @@ local function refreshBuddy()
   local liveOwner=state.ownerName and safeCall(detector.getPlayer,state.ownerName)
   if type(liveOwner)=="table" then state.owner=liveOwner end
   local origin=state.owner or state.eye
-  state.buddy={available=true,found=true,range=CONFIG.BUDDY_SCAN_RANGE,
+  state.entityTrack={filter=filter,available=true,found=true,range=CONFIG.ENTITY_SCAN_RANGE,
     distance=nearestDistance,rx=rx,ry=ry,rz=rz,
     x=origin and origin.x+rx or nil,
     y=origin and origin.y+ry or nil,
@@ -841,6 +864,29 @@ local function handleChatCommand(sender, message)
   -- Depending on the server/chat integration, the hidden-message marker may
   -- be present in the event text or already removed. Accept either form.
   local configured = CONFIG.CHAT_COMMAND:lower()
+  local entityConfigured=CONFIG.ENTITY_CHAT_COMMAND:lower()
+  if command==entityConfigured or command==entityConfigured:gsub("^%$","") then
+    local requested=(words[2] or ""):lower()
+    if requested=="" then
+      state.entityTrack.status="Usage: $entitytrack namespace:mob"
+      return
+    end
+    if requested=="clear" or requested=="off" then
+      state.entityTrack={filter=nil,available=true,found=false,disabled=true,
+        status="Entity tracker disabled"}
+      saveEntityTracker()
+      return
+    end
+    if not requested:find(":",1,true) then requested="minecraft:"..requested end
+    if not requested:match("^[a-z0-9_.-]+:[a-z0-9_./-]+$") then
+      state.entityTrack.status="Invalid entity ID"
+      return
+    end
+    state.entityTrack={filter=requested,available=true,found=false,
+      range=CONFIG.ENTITY_SCAN_RANGE,status="Tracking "..requested}
+    saveEntityTracker()
+    return
+  end
   if command ~= configured and command ~= configured:gsub("^%$", "") then return end
 
   if (words[2] or ""):lower() == "clear" then
@@ -1089,7 +1135,7 @@ local function render(layout)
   end
 
   local e=state.environment or {}
-  local buddy=state.buddy or {}
+  local entityTrack=state.entityTrack or {}
   local showEnvironment=state.hud.environment
   setEnabled(ui.envBg,showEnvironment); setEnabled(ui.envAccent,showEnvironment)
   local dim=(e.dimension and (tostring(e.dimension):match("[^:]+$") or tostring(e.dimension))) or "unknown"
@@ -1098,31 +1144,41 @@ local function render(layout)
   if e.available==false then
     envLines={"ENVIRONMENT","Detector unavailable","","","",""}
   else
-    local buddyLine,buddyPosition
-    if buddy.available==false then
-      buddyLine="Buddy scan unavailable"
-      buddyPosition="Find: mushroom fields"
-    elseif buddy.found then
-      buddyLine=string.format("BUDDY FOUND | %.1fm %s",buddy.distance or 0,
-        cardinalFromOffset(buddy.rx or 0,buddy.rz or 0))
-      if buddy.x and buddy.y and buddy.z then
-        buddyPosition=string.format("~XYZ: %d, %d, %d",round(buddy.x),round(buddy.y),round(buddy.z))
+    local entityLine,entityPosition
+    local filter=entityTrack.filter
+    local shortEntity=filter and (filter:match("[^:]+$") or filter) or nil
+    if not filter then
+      entityLine="Entity tracker: OFF"
+      entityPosition="$entitytrack namespace:mob"
+    elseif entityTrack.available==false then
+      entityLine="Entity scan unavailable"
+      entityPosition=abbreviate(entityTrack.error or filter,28)
+    elseif entityTrack.found then
+      entityLine=string.format("%s FOUND | %.1fm %s",shortEntity:upper(),entityTrack.distance or 0,
+        cardinalFromOffset(entityTrack.rx or 0,entityTrack.rz or 0))
+      if entityTrack.x and entityTrack.y and entityTrack.z then
+        entityPosition=string.format("~XYZ: %d, %d, %d",round(entityTrack.x),round(entityTrack.y),round(entityTrack.z))
       else
-        buddyPosition=string.format("Offset: %.0f, %.0f, %.0f",buddy.rx or 0,buddy.ry or 0,buddy.rz or 0)
+        entityPosition=string.format("Offset: %.0f, %.0f, %.0f",entityTrack.rx or 0,entityTrack.ry or 0,entityTrack.rz or 0)
       end
     else
-      buddyLine=string.format("Buddy: none within %dm",buddy.range or CONFIG.BUDDY_SCAN_RANGE)
-      buddyPosition=(biome=="mushroom_fields") and "Habitat found: search island" or
-        "Find: mushroom fields"
+      entityLine=string.format("%s: none within %dm",shortEntity,
+        entityTrack.range or CONFIG.ENTITY_SCAN_RANGE)
+      if filter=="nomansland:buddy" then
+        entityPosition=(biome=="mushroom_fields") and "Habitat found: search island" or
+          "Find: mushroom fields"
+      else
+        entityPosition="$entitytrack clear to disable"
+      end
     end
     envLines={"ENVIRONMENT",abbreviate(dim,14).." | "..abbreviate(biome,16),
       formatClock(e.time).." | "..tostring(e.weather or "--"),
       string.format("Light: block %s | sky %s",e.blockLight or "--",e.skyLight or "--"),
-      buddyLine,buddyPosition}
+      entityLine,entityPosition}
   end
   for i,obj in ipairs(ui.envLines or {}) do
     local envColor=i==1 and CONFIG.COLORS.title or
-      ((i==5 and buddy.found) and CONFIG.COLORS.tracked or CONFIG.COLORS.normal)
+      ((i==5 and entityTrack.found) and CONFIG.COLORS.tracked or CONFIG.COLORS.normal)
     setText(obj,envLines[i] or "",envColor)
     setEnabled(obj,showEnvironment)
   end
@@ -1211,7 +1267,7 @@ local function updateLoop()
   local lastDetectorRefresh=0
   local lastKeyboardCheck=0
   local lastEnvironment=0
-  local lastBuddyScan=0
+  local lastEntityScan=0
   while true do
     local layout=getLayout()
     if layout.key~=state.layoutKey then rebuildUI(layout) end
@@ -1247,9 +1303,10 @@ local function updateLoop()
       lastEnvironment=now
     end
     if state.hud.environment and
-       (lastBuddyScan==0 or now-lastBuddyScan>=CONFIG.BUDDY_SCAN_SECONDS) then
-      refreshBuddy()
-      lastBuddyScan=now
+       state.entityTrack.filter and
+       (lastEntityScan==0 or now-lastEntityScan>=CONFIG.ENTITY_SCAN_SECONDS) then
+      refreshEntityTracker()
+      lastEntityScan=now
     end
     if keyboard and (lastKeyboardCheck==0 or
        now-lastKeyboardCheck>=CONFIG.KEYBOARD_STATE_SECONDS) then
