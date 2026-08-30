@@ -319,6 +319,11 @@ local function rebuildUI(layout)
   local listH = lh * (layout.rows + 2) + 6*f
   local rightX = layout.w - m - pw
 
+  -- TEMPORARY: verifies the immutable-SHA GitHub updater.
+  ui.updateDiagnostic=createText({x=layout.w*0.42,y=layout.h*0.48,z=20,
+    content="API UPDATE TEST 4 - LIVE",fontSize=f*1.15,
+    color=0x35F3FF,center=true,shadow=true})
+
   -- Both panels form one top-right column: player list first, target below.
   ui.listBg = createRect({x=rightX, y=m, z=0, sizeX=pw, sizeY=listH,
     color=CONFIG.COLORS.panel, opacity=CONFIG.PANEL_OPACITY})
