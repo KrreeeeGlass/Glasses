@@ -6,7 +6,7 @@ if not http then error("HTTP is disabled in the CC:Tweaked server config",0) end
 
 for _,name in ipairs(FILES) do
   write("Downloading "..name.."... ")
-  local response,reason=http.get(BASE..name)
+  local response,reason=http.get(BASE..name.."?t="..tostring(os.epoch("utc")))
   if not response then error("\nDownload failed: "..tostring(reason),0) end
   local body=response.readAll()
   response.close()
