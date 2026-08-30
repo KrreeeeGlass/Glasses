@@ -770,15 +770,27 @@ local function refreshEntityTracker()
     return
   end
   state.entityScanRange=scanRange
-  local nearest,nearestDistance
+  local liveOwner=state.ownerName and safeCall(detector.getPlayer,state.ownerName)
+  if type(liveOwner)=="table" then state.owner=liveOwner end
+  local origin=state.owner or state.eye
+  local nearest
   for _,entity in pairs(entities) do
     if type(entity)=="table" then
-      local rx=tonumber(entity.x or entity.r) or 0
-      local ry=tonumber(entity.y or entity.u) or 0
-      local rz=tonumber(entity.z or entity.f) or 0
-      local d=math.sqrt(rx*rx+ry*ry+rz*rz)
-      if not nearestDistance or d<nearestDistance then
-        nearest,nearestDistance=entity,d
+      local wx,wy,wz=tonumber(entity.x),tonumber(entity.y),tonumber(entity.z)
+      local dx,dy,dz
+      if origin and wx and wy and wz then
+        dx,dy,dz=wx-origin.x,wy-origin.y,wz-origin.z
+      else
+        -- f/r/u are explicitly relative to the detector and are only a
+        -- fallback when AP omits absolute world coordinates.
+        dx,dy,dz=tonumber(entity.r),tonumber(entity.u),tonumber(entity.f)
+      end
+      if dx and dy and dz then
+        local d=math.sqrt(dx*dx+dy*dy+dz*dz)
+        if not nearest or d<nearest.distance then
+          nearest={distance=d,rx=dx,ry=dy,rz=dz,x=wx,y=wy,z=wz,
+            relativeOnly=not (origin and wx and wy and wz)}
+        end
       end
     end
   end
@@ -786,19 +798,9 @@ local function refreshEntityTracker()
     state.entityTrack={filter=filter,available=true,found=false,range=scanRange}
     return
   end
-  local rx=tonumber(nearest.x or nearest.r) or 0
-  local ry=tonumber(nearest.y or nearest.u) or 0
-  local rz=tonumber(nearest.z or nearest.f) or 0
-  -- Refresh the origin only on a positive hit so estimated world coordinates
-  -- remain useful even when the other player-related HUDs are disabled.
-  local liveOwner=state.ownerName and safeCall(detector.getPlayer,state.ownerName)
-  if type(liveOwner)=="table" then state.owner=liveOwner end
-  local origin=state.owner or state.eye
   state.entityTrack={filter=filter,available=true,found=true,range=scanRange,
-    distance=nearestDistance,rx=rx,ry=ry,rz=rz,
-    x=origin and origin.x+rx or nil,
-    y=origin and origin.y+ry or nil,
-    z=origin and origin.z+rz or nil}
+    distance=nearest.distance,rx=nearest.rx,ry=nearest.ry,rz=nearest.rz,
+    x=nearest.x,y=nearest.y,z=nearest.z,relativeOnly=nearest.relativeOnly}
 end
 
 local function updateSpeed(now)
@@ -1171,8 +1173,10 @@ local function render(layout)
       entityLine="Entity scan unavailable"
       entityPosition=abbreviate(entityTrack.error or filter,28)
     elseif entityTrack.found then
-      entityLine=string.format("%s FOUND | %.1fm %s",shortEntity:upper(),entityTrack.distance or 0,
-        cardinalFromOffset(entityTrack.rx or 0,entityTrack.rz or 0))
+      local direction=entityTrack.relativeOnly and "" or
+        (" "..cardinalFromOffset(entityTrack.rx or 0,entityTrack.rz or 0))
+      entityLine=string.format("%s FOUND | %.1fm%s",shortEntity:upper(),
+        entityTrack.distance or 0,direction)
       if entityTrack.x and entityTrack.y and entityTrack.z then
         entityPosition=string.format("~XYZ: %d, %d, %d",round(entityTrack.x),round(entityTrack.y),round(entityTrack.z))
       else
