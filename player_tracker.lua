@@ -1141,21 +1141,33 @@ local function updateLoop()
     local layout=getLayout()
     if layout.key~=state.layoutKey then rebuildUI(layout) end
     local now=os.epoch("utc")/1000
-    if lastOwnerRefresh==0 or now-lastOwnerRefresh>=CONFIG.OWNER_REFRESH_SECONDS then
+    local targetHudActive=state.hud.target or state.hud.compass or state.hud.movement
+    local ownerDataNeeded=state.hud.players or targetHudActive
+    local rosterNeeded=state.hud.players or (state.trackedName and targetHudActive)
+    local targetDataNeeded=state.trackedName and targetHudActive
+
+    if ownerDataNeeded and
+       (lastOwnerRefresh==0 or now-lastOwnerRefresh>=CONFIG.OWNER_REFRESH_SECONDS) then
       refreshOwnerData()
       lastOwnerRefresh=now
     end
-    if lastRoster==0 or now-lastRoster>=CONFIG.ROSTER_SECONDS then
+    if rosterNeeded and (lastRoster==0 or now-lastRoster>=CONFIG.ROSTER_SECONDS) then
       refreshPlayers()
       lastRoster=now
       lastOwnerRefresh=now
       lastDetectorRefresh=now
-    elseif lastDetectorRefresh==0 or now-lastDetectorRefresh>=CONFIG.DETECTOR_REFRESH_SECONDS then
+    elseif (targetDataNeeded or state.hud.players) and
+       (lastDetectorRefresh==0 or now-lastDetectorRefresh>=CONFIG.DETECTOR_REFRESH_SECONDS) then
       refreshTrackingData()
       lastDetectorRefresh=now
     end
-    updateSpeed(now)
-    if lastEnvironment==0 or now-lastEnvironment>=CONFIG.ENVIRONMENT_SECONDS then
+    if state.hud.movement then updateSpeed(now)
+    else
+      state.lastSpeedPos=nil
+      state.lastSpeedTime=nil
+    end
+    if state.hud.environment and
+       (lastEnvironment==0 or now-lastEnvironment>=CONFIG.ENVIRONMENT_SECONDS) then
       refreshEnvironment()
       lastEnvironment=now
     end
@@ -1180,7 +1192,7 @@ end
 local function inputLoop()
   while true do
     local event,a,b,c=os.pullEvent()
-    if event=="rednet_message" then
+    if event=="rednet_message" and state.hud.sable then
       handleSableTelemetry(a,b,c)
     end
     if event=="chat" and chatBox then
