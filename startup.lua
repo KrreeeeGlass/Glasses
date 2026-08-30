@@ -22,7 +22,11 @@ local function downloadUpdate()
     return false
   end
 
-  local response, reason = http.get(UPDATE_URL)
+  -- A unique query prevents GitHub/CDN or server-side HTTP caches from handing
+  -- the glasses an older tracker immediately after a push.
+  local separator=UPDATE_URL:find("?",1,true) and "&" or "?"
+  local requestUrl=UPDATE_URL..separator.."t="..tostring(os.epoch("utc"))
+  local response, reason = http.get(requestUrl)
   if not response then
     status("update failed: " .. tostring(reason), colors.yellow)
     return false
