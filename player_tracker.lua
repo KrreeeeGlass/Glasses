@@ -1265,6 +1265,10 @@ end
 
 local function main()
   local autoWasOn=safeCall(overlay.isAutoUpdating)
+  -- Overlay objects can survive a forced stop or glasses-computer reboot. Clear
+  -- those orphaned objects once before rebuilding this script's current HUD.
+  pcall(overlay.clear)
+  pcall(overlay.update)
   local laserWasVisible
   local modemFound=false
   for _,name in ipairs(peripheral.getNames()) do
