@@ -1,4 +1,5 @@
 -- Create Propulsion airship autopilot for CC:Tweaked (Minecraft 1.21.1)
+local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Requires: a CC GPS constellation, a navigation_table peripheral (Create: Avionics),
 -- and Create Propulsion thrusters connected directly or through wired modems.
 -- First run: ship_autopilot setup

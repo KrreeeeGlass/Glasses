@@ -1,4 +1,5 @@
 -- Create Propulsion airship safe boot + automatic updater.
+local ROLE_MARKER="CENTER_CONTROLLER_STARTUP"
 local REPOSITORY="KrreeeeGlass/Glasses"
 local REMOTE_PATH="airship/center/main.lua"
 local PROGRAM_PATH="/airship.lua"
@@ -31,6 +32,9 @@ local function update()
   local download,reason=http.get(url)
   if not download then status("update failed: "..tostring(reason),colors.yellow); return false end
   local source=download.readAll(); download.close()
+  if not source:find('ROLE_MARKER="CENTER_CONTROLLER_MAIN"',1,true) then
+    status("wrong-role update rejected",colors.red); return false
+  end
   local compiled,syntaxError=load(source,"@"..PROGRAM_PATH,"t",_ENV)
   if not compiled then status("update rejected: "..tostring(syntaxError),colors.red); return false end
   if fs.exists(TEMP_PATH) then fs.delete(TEMP_PATH) end

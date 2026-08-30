@@ -1,4 +1,5 @@
 -- Wireless corner actuator for the Create Propulsion airship autopilot.
+local ROLE_MARKER="CORNER_RELAY_MAIN"
 local VERSION="1.2.0"
 local PROTOCOL="sable_airship_thrusters_v1"
 local WATCHDOG_SECONDS=0.60
