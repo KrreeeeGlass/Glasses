@@ -1,12 +1,25 @@
 -- One-command installer for KrreeeeGlass/Glasses.
-local BASE="https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/"
+local REPOSITORY="KrreeeeGlass/Glasses"
 local FILES={"player_tracker.lua","startup.lua"}
 
 if not http then error("HTTP is disabled in the CC:Tweaked server config",0) end
 
+local apiUrl="https://api.github.com/repos/"..REPOSITORY.."/commits/main?t="..
+  tostring(os.epoch("utc"))
+local api,apiReason=http.get({url=apiUrl,headers={
+  Accept="application/vnd.github+json",["User-Agent"]="CC-Glasses-Installer",
+  ["Cache-Control"]="no-cache"}})
+if not api then error("GitHub version check failed: "..tostring(apiReason),0) end
+local apiBody=api.readAll()
+api.close()
+local metadata=textutils.unserialiseJSON(apiBody)
+local sha=type(metadata)=="table" and metadata.sha
+if type(sha)~="string" or #sha<7 then error("GitHub returned no commit SHA",0) end
+local BASE="https://raw.githubusercontent.com/"..REPOSITORY.."/"..sha.."/"
+
 for _,name in ipairs(FILES) do
   write("Downloading "..name.."... ")
-  local response,reason=http.get(BASE..name.."?t="..tostring(os.epoch("utc")))
+  local response,reason=http.get(BASE..name)
   if not response then error("\nDownload failed: "..tostring(reason),0) end
   local body=response.readAll()
   response.close()

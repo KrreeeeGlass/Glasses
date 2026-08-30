@@ -1,7 +1,8 @@
 -- Smart Glasses tracker boot updater
 -- Save this file as /startup.lua on the Smart Glasses computer.
 
-local UPDATE_URL = "https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/player_tracker.lua"
+local REPOSITORY = "KrreeeeGlass/Glasses"
+local UPDATE_URL = "https://raw.githubusercontent.com/"..REPOSITORY.."/main/player_tracker.lua"
 local TRACKER_PATH = "/player_tracker.lua"
 local TEMP_PATH = "/player_tracker.lua.download"
 local BACKUP_PATH = "/player_tracker.lua.backup"
@@ -22,10 +23,25 @@ local function downloadUpdate()
     return false
   end
 
-  -- A unique query prevents GitHub/CDN or server-side HTTP caches from handing
-  -- the glasses an older tracker immediately after a push.
-  local separator=UPDATE_URL:find("?",1,true) and "&" or "?"
-  local requestUrl=UPDATE_URL..separator.."t="..tostring(os.epoch("utc"))
+  -- Resolve main through GitHub's API, then use the immutable commit URL. Raw
+  -- branch URLs may remain stale at a CDN edge for several minutes after push.
+  local apiUrl="https://api.github.com/repos/"..REPOSITORY.."/commits/main?t="..
+    tostring(os.epoch("utc"))
+  local okApi,apiResponse=pcall(http.get,{
+    url=apiUrl,
+    headers={Accept="application/vnd.github+json",["User-Agent"]="CC-Glasses-Updater",
+      ["Cache-Control"]="no-cache"},
+  })
+  local sha
+  if okApi and apiResponse then
+    local body=apiResponse.readAll()
+    apiResponse.close()
+    local okJson,data=pcall(textutils.unserialiseJSON,body)
+    if okJson and type(data)=="table" and type(data.sha)=="string" then sha=data.sha end
+  end
+  local requestUrl=sha and
+    ("https://raw.githubusercontent.com/"..REPOSITORY.."/"..sha.."/player_tracker.lua") or
+    (UPDATE_URL.."?t="..tostring(os.epoch("utc")))
   local response, reason = http.get(requestUrl)
   if not response then
     status("update failed: " .. tostring(reason), colors.yellow)
