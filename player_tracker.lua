@@ -506,6 +506,8 @@ local function rebuildUI(layout)
     "Backspace: clear target",
     "Home / End: first / last",
     "M: HUD settings",
+    "$target name | x y z | clear",
+    "$entitytrack mob | clear",
   }
   local keyH=lh*#keyLines+8*f
   local keyY=moveY-gap-keyH
