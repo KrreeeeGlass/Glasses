@@ -319,6 +319,12 @@ local function rebuildUI(layout)
   local listH = lh * (layout.rows + 2) + 6*f
   local rightX = layout.w - m - pw
 
+  -- TEMPORARY: visible proof that startup.lua downloaded this GitHub build.
+  -- Remove after Krreeee confirms the automatic updater works.
+  ui.githubUpdateTest=createText({x=layout.w/2,y=m+2*f,z=10,
+    content="GITHUB UPDATE WORKING - TEST 1",fontSize=f,
+    color=CONFIG.COLORS.arrow,center=true,shadow=true})
+
   -- Both panels form one top-right column: player list first, target below.
   ui.listBg = createRect({x=rightX, y=m, z=0, sizeX=pw, sizeY=listH,
     color=CONFIG.COLORS.panel, opacity=CONFIG.PANEL_OPACITY})
