@@ -19,13 +19,13 @@ local count=countThrusters()
 local role,remote,cache,marker
 if count==0 then
   role="CENTER CONTROLLER"
-  remote="airship/runtime_v150/center.lua"
-  cache="/airship_center_runtime_v150.lua"
+  remote="airship/runtime_v160/center.lua"
+  cache="/airship_center_runtime_v160.lua"
   marker='ROLE_MARKER="CENTER_CONTROLLER_MAIN"'
 elseif count==3 then
   role="CORNER RELAY"
-  remote="airship/runtime_v150/corner.lua"
-  cache="/airship_corner_runtime_v150.lua"
+  remote="airship/runtime_v160/corner.lua"
+  cache="/airship_corner_runtime_v160.lua"
   marker='ROLE_MARKER="CORNER_RELAY_MAIN"'
 else
   error("Universal airship: expected 0 thrusters for center or 3 for corner; found "..count,0)

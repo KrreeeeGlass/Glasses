@@ -26,12 +26,15 @@ wget run https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/airship/cor
 
 No ID or pairing step is required. Each relay reboots, finds the center automatically, and releases the temporary binding if that center disappears.
 
-The center computer uses the main installer shown above. Its wireless/Ender modem handles corner commands, GPS, and SABLE Smart Glasses telemetry.
+The center computer uses the main installer shown above. Its wireless/Ender modem handles corner commands and SABLE Smart Glasses telemetry.
+
+The center must directly touch, or share a wired-modem network with, the **Advanced Navigation Table from Create Aeronautics: Gadgets & Gizmos**. Put a valid permanent reference target in the table and select it. The controller reads live world X/Y/Z from the table and derives yaw from the reference target and pointer angle. Keep that reference more than two blocks away.
 
 Commands:
 
 ```lua
 airship list
+airship zero
 airship setup
 airship goto X Y Z
 airship hold
@@ -39,4 +42,4 @@ airship abort
 airship status
 ```
 
-The autopilot also requires a four-host CC GPS constellation and a `navigation_table` peripheral from Create: Avionics. A `gimbal_sensor` is recommended.
+`airship zero` records the ship's current direction as heading 0. Run it while the ship is pointed in the exact direction you want it to preserve. No CC GPS constellation, Gimbal Sensor, or Create: Avionics is required.
