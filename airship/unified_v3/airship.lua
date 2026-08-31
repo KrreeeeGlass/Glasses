@@ -1,8 +1,8 @@
 -- Universal airship launcher: identical file on center and all four corners.
 local ROLE_MARKER="UNIFIED_AIRSHIP_V3_LAUNCHER"
 local REPOSITORY="KrreeeeGlass/Glasses"
-local RELEASE_VERSION="1.6.4"
-local RELEASE_REF="airship-v1.6.4"
+local RELEASE_VERSION="1.6.5"
+local RELEASE_REF="airship-v1.6.5"
 local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
   creative_thruster=true,vector_thruster=true,liquid_vector_thruster=true,
   creative_vector_thruster=true}

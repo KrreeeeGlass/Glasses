@@ -4,7 +4,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | setup | zero | hold | abort
 
-local VERSION="1.6.4"
+local VERSION="1.6.5"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -68,7 +68,11 @@ end
 
 local function save()
   settings.set("ship_autopilot.config",cfg)
-  settings.set("ship_autopilot.destination",destination)
+  if destination==nil then
+    settings.unset("ship_autopilot.destination")
+  else
+    settings.set("ship_autopilot.destination",destination)
+  end
   settings.set("ship_autopilot.phase",phase)
   settings.save(SETTINGS_FILE)
 end
