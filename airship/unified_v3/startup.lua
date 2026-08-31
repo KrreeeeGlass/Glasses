@@ -4,6 +4,16 @@ local REPOSITORY="KrreeeeGlass/Glasses"
 local LOCAL="/airship.lua"
 local REMOTE="airship/unified_v3/airship.lua"
 
+local function launcherVersion(source)
+  return source and source:match('local RELEASE_VERSION="([^"]+)"')
+end
+
+local function versionNumber(version)
+  local major,minor,patch=tostring(version or ""):match("^(%d+)%.(%d+)%.(%d+)$")
+  if not major then return nil end
+  return tonumber(major)*1000000+tonumber(minor)*1000+tonumber(patch)
+end
+
 local function updateLauncher()
   if not http then return false end
   local response=http.get("https://raw.githubusercontent.com/"..REPOSITORY.."/main/"..REMOTE..
@@ -12,6 +22,18 @@ local function updateLauncher()
   local source=response.readAll(); response.close()
   if not source:find('ROLE_MARKER="UNIFIED_AIRSHIP_V3_LAUNCHER"',1,true) or
       not load(source,"@"..LOCAL,"t",_ENV) then return false end
+  if fs.exists(LOCAL) then
+    local current=fs.open(LOCAL,"r")
+    local installed=current and current.readAll() or nil
+    if current then current.close() end
+    local incomingNumber=versionNumber(launcherVersion(source))
+    local installedNumber=versionNumber(launcherVersion(installed))
+    if incomingNumber and installedNumber and incomingNumber<installedNumber then
+      print("[unified] rejected stale launcher v"..tostring(launcherVersion(source))..
+        "; keeping v"..tostring(launcherVersion(installed)))
+      return false
+    end
+  end
   local temp=LOCAL..".download"
   if fs.exists(temp) then fs.delete(temp) end
   local file=fs.open(temp,"w"); if not file then return false end

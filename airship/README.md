@@ -49,3 +49,4 @@ Updates are automatic. The center refreshes its launcher and runtime at every bo
 Every published airship change increments the runtime version. The launcher prints the downloaded and running version on the center, and each corner prints its running version at startup so all five computers can be checked at a glance.
 
 Runtime downloads use immutable `airship-vX.Y.Z` Git tags. This prevents a GitHub raw cache from mixing launcher and runtime revisions.
+Launchers and corner updaters compare semantic versions and reject stale downloads, so a delayed `main` cache can never downgrade a computer that already has a newer release.

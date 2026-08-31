@@ -1,12 +1,12 @@
 -- Wireless corner actuator for the Create Propulsion airship autopilot.
 local ROLE_MARKER="CORNER_RELAY_MAIN"
-local VERSION="1.6.3"
+local VERSION="1.6.4"
 local PROTOCOL="sable_airship_thrusters_v1"
 local WATCHDOG_SECONDS=0.60
 local RELEASE_SECONDS=3.0
 local UPDATE_INTERVAL=120
 local REPOSITORY="KrreeeeGlass/Glasses"
-local RELEASE_REF="airship-v1.6.3"
+local RELEASE_REF="airship-v1.6.4"
 local LAUNCHER_PATH="/airship.lua"
 local RUNTIME_PATH="/airship_corner_runtime_v160.lua"
 local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
@@ -16,6 +16,17 @@ local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
 local controllerId=nil
 local thrusters={}
 local relayId=nil
+
+local function sourceVersion(source)
+  return source and (source:match('local RELEASE_VERSION="([^"]+)"') or
+    source:match('local VERSION="([^"]+)"'))
+end
+
+local function versionNumber(version)
+  local major,minor,patch=tostring(version or ""):match("^(%d+)%.(%d+)%.(%d+)$")
+  if not major then return nil end
+  return tonumber(major)*1000000+tonumber(minor)*1000+tonumber(patch)
+end
 
 local function advertisement()
   local advertised={}
@@ -65,6 +76,13 @@ local function updateFile(remote,path,marker,ref)
     local current=fs.open(path,"r")
     if current then installed=current.readAll(); current.close() end
   end
+  local incomingNumber=versionNumber(sourceVersion(source))
+  local installedNumber=versionNumber(sourceVersion(installed))
+  if incomingNumber and installedNumber and incomingNumber<installedNumber then
+    print("Rejected stale update v"..tostring(sourceVersion(source))..
+      "; keeping v"..tostring(sourceVersion(installed)))
+    return false,nil
+  end
   if installed==source then return false,nil end
   local temporary=path..".download"
   if fs.exists(temporary) then fs.delete(temporary) end
@@ -74,7 +92,7 @@ local function updateFile(remote,path,marker,ref)
   file.close()
   if fs.exists(path) then fs.delete(path) end
   fs.move(temporary,path)
-  return true,source:match('local VERSION="([^"]+)"')
+  return true,sourceVersion(source)
 end
 
 local function installAvailableUpdates()
