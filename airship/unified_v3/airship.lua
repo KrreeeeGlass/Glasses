@@ -32,12 +32,14 @@ else
 end
 
 print("[unified] detected "..role.." ("..count.." local thrusters)")
+local downloadedVersion=nil
 local url="https://raw.githubusercontent.com/"..REPOSITORY.."/main/"..remote..
   "?t="..tostring(os.epoch("utc"))
 local response=http and http.get(url)
 if response then
   local source=response.readAll(); response.close()
   if source:find(marker,1,true) and load(source,"@"..cache,"t",_ENV) then
+    downloadedVersion=source:match('local VERSION="([^"]+)"')
     local temporary=cache..".download"
     if fs.exists(temporary) then fs.delete(temporary) end
     local file=fs.open(temporary,"w")
@@ -45,7 +47,8 @@ if response then
       file.write(source); file.close()
       if fs.exists(cache) then fs.delete(cache) end
       fs.move(temporary,cache)
-      print("[unified] "..role.." runtime updated")
+      print("[unified] "..role.." runtime updated"..
+        (downloadedVersion and " -> v"..downloadedVersion or ""))
     end
   else
     print("[unified] rejected invalid or wrong-role download")
@@ -56,6 +59,8 @@ end
 
 if not fs.exists(cache) then error("Missing "..role.." runtime and download failed",0) end
 local file=assert(fs.open(cache,"r")); local source=file.readAll(); file.close()
+local installedVersion=source:match('local VERSION="([^"]+)"') or "unknown"
+print("[unified] running "..role.." v"..installedVersion)
 local program,err=load(source,"@"..cache,"t",_ENV)
 if not program then error(err,0) end
 return program(...)

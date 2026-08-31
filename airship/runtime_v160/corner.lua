@@ -1,6 +1,6 @@
 -- Wireless corner actuator for the Create Propulsion airship autopilot.
 local ROLE_MARKER="CORNER_RELAY_MAIN"
-local VERSION="1.6.1"
+local VERSION="1.6.2"
 local PROTOCOL="sable_airship_thrusters_v1"
 local WATCHDOG_SECONDS=0.60
 local RELEASE_SECONDS=3.0
@@ -64,7 +64,7 @@ local function updateFile(remote,path,marker)
     local current=fs.open(path,"r")
     if current then installed=current.readAll(); current.close() end
   end
-  if installed==source then return false end
+  if installed==source then return false,nil end
   local temporary=path..".download"
   if fs.exists(temporary) then fs.delete(temporary) end
   local file=fs.open(temporary,"w")
@@ -73,15 +73,15 @@ local function updateFile(remote,path,marker)
   file.close()
   if fs.exists(path) then fs.delete(path) end
   fs.move(temporary,path)
-  return true
+  return true,source:match('local VERSION="([^"]+)"')
 end
 
 local function installAvailableUpdates()
-  local runtimeChanged=updateFile("airship/runtime_v160/corner.lua",RUNTIME_PATH,
+  local runtimeChanged,runtimeVersion=updateFile("airship/runtime_v160/corner.lua",RUNTIME_PATH,
     'ROLE_MARKER="CORNER_RELAY_MAIN"')
   local launcherChanged=updateFile("airship/unified_v3/airship.lua",LAUNCHER_PATH,
     'ROLE_MARKER="UNIFIED_AIRSHIP_V3_LAUNCHER"')
-  return runtimeChanged or launcherChanged
+  return runtimeChanged or launcherChanged,runtimeVersion
 end
 
 discover()
@@ -133,9 +133,10 @@ while true do
   -- Never update or reboot while the center is actively flying the ship.
   if not controllerId and os.clock()>=nextUpdateCheck then
     nextUpdateCheck=os.clock()+UPDATE_INTERVAL
-    if installAvailableUpdates() then
+    local updated,newVersion=installAvailableUpdates()
+    if updated then
       stop()
-      print("Update installed; rebooting safely...")
+      print("Update installed"..(newVersion and " -> v"..newVersion or "").."; rebooting safely...")
       sleep(0.5)
       os.reboot()
     end
