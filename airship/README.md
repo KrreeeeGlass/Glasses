@@ -43,3 +43,5 @@ airship status
 ```
 
 `airship zero` records the ship's current direction as heading 0. Run it while the ship is pointed in the exact direction you want it to preserve. No CC GPS constellation, Gimbal Sensor, or Create: Avionics is required.
+
+Updates are automatic. The center refreshes its launcher and runtime at every boot and before every `airship` command. Corner relays also check GitHub while idle and install updates automatically; they never update or reboot while a center is actively commanding thrust.

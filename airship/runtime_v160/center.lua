@@ -4,7 +4,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | setup | zero | hold | abort
 
-local VERSION="1.6.0"
+local VERSION="1.6.1"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -477,6 +477,7 @@ elseif cmd=="abort" then
   print("All visible thrusters stopped.")
 elseif cmd=="status" then
   print("Version: "..VERSION)
+  print("Auto update: enabled (every boot and airship command)")
   print("Phase: "..phase)
   if destination then
     print(string.format("Target: %.1f %.1f %.1f",destination.x,destination.y,destination.z))
