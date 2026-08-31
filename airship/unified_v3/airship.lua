@@ -1,8 +1,46 @@
 -- Universal airship launcher: identical file on center and all four corners.
 local ROLE_MARKER="UNIFIED_AIRSHIP_V3_LAUNCHER"
 local REPOSITORY="KrreeeeGlass/Glasses"
-local RELEASE_VERSION="1.6.5"
-local RELEASE_REF="airship-v1.6.5"
+local RELEASE_VERSION="1.6.6"
+local RELEASE_REF="airship-v1.6.6"
+
+local RUN_ARGS={...}
+
+local function versionNumber(version)
+  local major,minor,patch=tostring(version or ""):match("^(%d+)%.(%d+)%.(%d+)$")
+  if not major then return nil end
+  return tonumber(major)*1000000+tonumber(minor)*1000+tonumber(patch)
+end
+
+-- Commands update the launcher itself before selecting a role/runtime. This
+-- makes normal `airship ...` use an update check even without a reboot.
+local function handOffToNewerLauncher()
+  if not http then return false end
+  local url="https://raw.githubusercontent.com/"..REPOSITORY..
+    "/main/airship/unified_v3/airship.lua?t="..tostring(os.epoch("utc"))
+  local response=http.get(url)
+  if not response then return false end
+  local source=response.readAll(); response.close()
+  if not source:find('ROLE_MARKER="UNIFIED_AIRSHIP_V3_LAUNCHER"',1,true) then return false end
+  local incoming=source:match('local RELEASE_VERSION="([^"]+)"')
+  local incomingNumber=versionNumber(incoming)
+  local installedNumber=versionNumber(RELEASE_VERSION)
+  if not incomingNumber or not installedNumber or incomingNumber<=installedNumber then return false end
+  local program=load(source,"@/airship.lua","t",_ENV)
+  if not program then return false end
+  local temporary="/airship.lua.download"
+  if fs.exists(temporary) then fs.delete(temporary) end
+  local file=fs.open(temporary,"w")
+  if not file then return false end
+  file.write(source); file.close()
+  if fs.exists("/airship.lua") then fs.delete("/airship.lua") end
+  fs.move(temporary,"/airship.lua")
+  print("[unified] launcher auto-updated v"..RELEASE_VERSION.." -> v"..incoming)
+  return true,program
+end
+
+local handedOff,newLauncher=handOffToNewerLauncher()
+if handedOff then return newLauncher(table.unpack(RUN_ARGS)) end
 local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
   creative_thruster=true,vector_thruster=true,liquid_vector_thruster=true,
   creative_vector_thruster=true}

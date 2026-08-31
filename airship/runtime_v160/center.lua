@@ -4,7 +4,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | setup | zero | hold | abort
 
-local VERSION="1.6.5"
+local VERSION="1.6.6"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -236,6 +236,33 @@ local function ask(prompt,default)
   return value
 end
 
+-- The four computers sit at the corners and share the same orientation. Each
+-- relay ID therefore contains its corner (front/back + left/right), while the
+-- final name component is the outer edge occupied by that thruster. Nozzles
+-- point outward, so the force on the ship points inward.
+local function automaticThrusterMap(names)
+  local mapped={}
+  local forces={
+    bottom={0,1,0},
+    left={1,0,0},right={-1,0,0},
+    front={0,0,1},back={0,0,-1},
+  }
+  for _,name in ipairs(names) do
+    local relay,side=name:match("^corner_(.+)_([^_]+)$")
+    local force=side and forces[side] or nil
+    if not relay or not force then return nil,"unrecognized thruster name: "..name end
+    local rx=relay:find("left",1,true) and -1 or
+      (relay:find("right",1,true) and 1 or nil)
+    local rz=relay:find("front",1,true) and -1 or
+      (relay:find("back",1,true) and 1 or nil)
+    if not rx or not rz then return nil,"unrecognized corner identity: "..relay end
+    mapped[#mapped+1]={name=name,fx=force[1],fy=force[2],fz=force[3],
+      rx=side=="bottom" and 0 or rx,rz=side=="bottom" and 0 or rz}
+  end
+  if #mapped~=12 then return nil,"expected 12 thrusters; mapped "..#mapped end
+  return mapped
+end
+
 local function setup()
   allStop()
   discover()
@@ -246,37 +273,22 @@ local function setup()
   table.sort(names)
   if #names~=12 then error("Expected 12 remote thrusters; found "..#names,0) end
 
-  print("\nFor each thruster, enter the FORCE it applies to the ship.")
-  print("Use ship/body axes at heading zero: +x east, -x west, +z south,")
-  print("-z north, and +y up. 'skip' ignores a thruster.")
-  print("Corner x/z is -1 or +1; yaw moment is x*fz-z*fx.\n")
-  cfg.thrusters={}
-  local vectors={
-    ["+x"]={1,0,0},["-x"]={-1,0,0},["+z"]={0,0,1},
-    ["-z"]={0,0,-1},["+y"]={0,1,0},
-  }
-  for _,name in ipairs(names) do
-    print(name)
-    local axis=tostring(ask("  force (+x,-x,+z,-z,+y or skip)","skip")):lower()
-    if axis~="skip" then
-      local v=vectors[axis]
-      if not v then error("Invalid direction: "..axis,0) end
-      local rx,rz=0,0
-      if axis~="+y" then
-        rx=tonumber(ask("  corner x (-1 west, +1 east)"))
-        rz=tonumber(ask("  corner z (-1 north, +1 south)"))
-        if not rx or not rz then error("Corner values must be numbers",0) end
-      end
-      cfg.thrusters[#cfg.thrusters+1]={name=name,fx=v[1],fy=v[2],fz=v[3],rx=rx,rz=rz}
-    end
-  end
+  local mapped,mapError=automaticThrusterMap(names)
+  if not mapped then error("Automatic square-corner mapping failed: "..tostring(mapError),0) end
+  cfg.thrusters=mapped
+  print("\nAutomatic square-corner mapping complete:")
+  print("  4 bottom thrusters -> lift")
+  print("  2 left + 2 right edge thrusters -> X translation")
+  print("  2 front + 2 back edge thrusters -> Z translation")
+  print("  Differential edge thrust -> heading correction")
   cfg.cruiseY=tonumber(ask("Cruise altitude",cfg.cruiseY)) or cfg.cruiseY
   cfg.hoverPower=tonumber(ask("Estimated hover throttle 0..1",cfg.hoverPower)) or cfg.hoverPower
   cfg.maxPower=tonumber(ask("Maximum initial throttle 0..1",cfg.maxPower)) or cfg.maxPower
   phase="idle"
   destination=nil
   save()
-  print("Saved "..#cfg.thrusters.." thrusters. Test 'airship hold' before goto.")
+  print("Saved all "..#cfg.thrusters.." thrusters automatically.")
+  print("Test 'airship hold' at low altitude before goto.")
 end
 
 local function bindConfigured()
