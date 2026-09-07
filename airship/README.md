@@ -46,6 +46,7 @@ Commands:
 ```lua
 airship list
 airship controller
+airship calibrate
 airship zero
 airship setup
 airship goto X Y Z
@@ -55,6 +56,8 @@ airship status
 ```
 
 `airship controller` performs a read-only probe of the Advanced Contraption Controller. It lists every exposed ComputerCraft method, safely reads its status and graph variables, and saves the complete report to `/airship_controller_probe.txt`.
+
+`airship calibrate` performs short low-power X, Z, and yaw pulses, measures the Diagram response, and saves the real actuator-axis matrix and yaw polarity. Run it once after building or rotating the thruster/computer layout, in a clear low-altitude area with the gyro enabled.
 
 `airship zero` records the current quaternion direction as heading 0. Run it while the ship is pointed in the exact direction you want it to preserve. No navigation table, lodestone compass, CC GPS constellation, or gimbal sensor is required.
 

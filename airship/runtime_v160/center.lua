@@ -3,9 +3,9 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Position, orientation and motion come directly from an Advanced Contraption
 -- Controller graph linked to the ship's Contraption Diagram.
 -- Fly:   airship goto X Y Z
--- Other: airship status | list | controller | setup | zero | hold | abort
+-- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.8.2"
+local VERSION="1.9.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -14,6 +14,7 @@ local DEFAULTS={
   cruiseY=350,
   targetYaw=0,
   controllerYawOffset=0,
+  controlMatrix={1,0,0,1},
   maxHorizontalSpeed=12,
   maxClimbSpeed=6,
   maxDescentSpeed=3,
@@ -600,8 +601,13 @@ local function horizontalCommand(p,target,yaw)
   local accelZ=clamp((desiredZ-velocity.z)*cfg.horizontalAccelKp,
     -cfg.maxHorizontalAccel,cfg.maxHorizontalAccel)
   local bodyAccelX,bodyAccelZ=worldToBody(accelX,accelZ,yaw)
-  return normalizedAxisForce(bodyAccelX,"fx"),
-    normalizedAxisForce(bodyAccelZ,"fz"),distance
+  local desiredX=normalizedAxisForce(bodyAccelX,"fx")
+  local desiredZ=normalizedAxisForce(bodyAccelZ,"fz")
+  local matrix=type(cfg.controlMatrix)=="table" and cfg.controlMatrix or DEFAULTS.controlMatrix
+  local commandX=(tonumber(matrix[1]) or 1)*desiredX+(tonumber(matrix[2]) or 0)*desiredZ
+  local commandZ=(tonumber(matrix[3]) or 0)*desiredX+(tonumber(matrix[4]) or 1)*desiredZ
+  return clamp(commandX,-cfg.maxPower,cfg.maxPower),
+    clamp(commandZ,-cfg.maxPower,cfg.maxPower),distance
 end
 
 local function verticalCommand(p,targetY)
@@ -614,6 +620,95 @@ local function verticalCommand(p,targetY)
   if capacity<=0 then return 0,errorY end
   local requiredForce=currentMass*math.max(0,cfg.gravity+acceleration)
   return clamp(requiredForce/capacity,0,cfg.maxPower),errorY
+end
+
+local function calibrationPulse(commandX,commandZ,commandYaw,vertical,seconds)
+  local startPosition,startYaw,startError=readControllerPose()
+  if not startPosition then error("Calibration sensor failure: "..tostring(startError),0) end
+  local startVelocity={x=velocity.x,z=velocity.z}
+  local startYawRate=yawRate
+  local frames=math.max(1,math.floor(seconds/CONTROL_DT+0.5))
+  for _=1,frames do
+    relayHeartbeat()
+    setOutputs(commandX,vertical,commandZ,commandYaw)
+    sleep(CONTROL_DT)
+  end
+  setOutputs(0,vertical,0,0)
+  local endPosition,endYaw,endError=readControllerPose()
+  if not endPosition then error("Calibration sensor failure: "..tostring(endError),0) end
+  return {x=velocity.x-startVelocity.x,z=velocity.z-startVelocity.z},
+    wrapAngle(endYaw-startYaw),yawRate-startYawRate,startYaw
+end
+
+local function calibrateActuators()
+  allStop()
+  discover()
+  bindConfigured()
+  if relayCount~=4 then error("Expected 4 corner relays; found "..relayCount,0) end
+  local p,_,controllerError=readControllerPose()
+  if not p then error("Controller physics unavailable: "..tostring(controllerError),0) end
+  print("ACTUATOR CALIBRATION v"..VERSION)
+  print("Short low-power X, Z and yaw pulses will move the ship.")
+  print("Use a clear area at low altitude; gyro must be active.")
+  if tostring(ask("Type CALIBRATE to begin","")):upper()~="CALIBRATE" then
+    error("Calibration cancelled",0)
+  end
+
+  local liftCapacity=totalLiftCapacity()
+  if liftCapacity<=0 then error("No lift capacity available",0) end
+  local vertical=clamp(currentMass*cfg.gravity/liftCapacity,0,cfg.maxPower)
+  local pulsePower=0.04
+  local pulseSeconds=0.50
+  local ok,result=xpcall(function()
+    print("Testing logical +X...")
+    local deltaX,_,_,headingX=calibrationPulse(pulsePower,0,0,vertical,pulseSeconds)
+    calibrationPulse(-pulsePower,0,0,vertical,pulseSeconds)
+    sleep(0.25)
+
+    print("Testing logical +Z...")
+    local deltaZ,_,_,headingZ=calibrationPulse(0,pulsePower,0,vertical,pulseSeconds)
+    calibrationPulse(0,-pulsePower,0,vertical,pulseSeconds)
+    sleep(0.25)
+
+    local bodyXX,bodyXZ=worldToBody(deltaX.x,deltaX.z,headingX)
+    local bodyZX,bodyZZ=worldToBody(deltaZ.x,deltaZ.z,headingZ)
+    local lengthX=math.sqrt(bodyXX*bodyXX+bodyXZ*bodyXZ)
+    local lengthZ=math.sqrt(bodyZX*bodyZX+bodyZZ*bodyZZ)
+    if lengthX<0.02 or lengthZ<0.02 then
+      error("Translation response too small. Check energy/exhaust and try again.",0)
+    end
+    local m11,m21=bodyXX/lengthX,bodyXZ/lengthX
+    local m12,m22=bodyZX/lengthZ,bodyZZ/lengthZ
+    local determinant=m11*m22-m12*m21
+    if math.abs(determinant)<0.35 then
+      error("Translation axes are not independent enough to calibrate safely.",0)
+    end
+    cfg.controlMatrix={
+      clamp(m22/determinant,-1.5,1.5),clamp(-m12/determinant,-1.5,1.5),
+      clamp(-m21/determinant,-1.5,1.5),clamp(m11/determinant,-1.5,1.5),
+    }
+
+    print("Testing logical +yaw...")
+    local _,yawDelta,yawRateDelta=calibrationPulse(0,0,0.04,vertical,0.60)
+    calibrationPulse(0,0,-0.04,vertical,0.60)
+    local yawResponse=math.abs(yawDelta)>=0.03 and yawDelta or yawRateDelta
+    if math.abs(yawResponse)<0.03 then
+      error("Yaw response too small. Check horizontal thrusters and try again.",0)
+    end
+    cfg.yawActuatorPolarity=yawResponse>0 and 1 or -1
+    save()
+    return {deltaX=deltaX,deltaZ=deltaZ,yawDelta=yawDelta,
+      yawRateDelta=yawRateDelta}
+  end,debug.traceback)
+  allStop()
+  if not ok then error(result,0) end
+  print(string.format("X response: %.3f %.3f",result.deltaX.x,result.deltaX.z))
+  print(string.format("Z response: %.3f %.3f",result.deltaZ.x,result.deltaZ.z))
+  print(string.format("Yaw response: %.3f deg / %.3f deg/s | polarity %d",
+    result.yawDelta,result.yawRateDelta,cfg.yawActuatorPolarity))
+  print(string.format("Control matrix: %.3f %.3f / %.3f %.3f",
+    cfg.controlMatrix[1],cfg.controlMatrix[2],cfg.controlMatrix[3],cfg.controlMatrix[4]))
+  print("Calibration saved. Thrusters are OFF; now run: airship hold")
 end
 
 local function sendTelemetry(p,yaw)
@@ -795,6 +890,8 @@ elseif cmd=="goto" then
   flyTo(x,y,z)
 elseif cmd=="zero" then
   calibrateZero()
+elseif cmd=="calibrate" then
+  calibrateActuators()
 elseif cmd=="hold" then
   local p,yaw,controllerError=readControllerPose()
   if not p or not yaw then error("Controller physics unavailable: "..tostring(controllerError),0) end
@@ -816,6 +913,7 @@ elseif cmd=="status" then
 else
   print("Create Propulsion Airship Autopilot "..VERSION)
   print("  airship setup")
+  print("  airship calibrate  (learn movement/yaw axes)")
   print("  airship zero")
   print("  airship goto X Y Z")
   print("  airship hold | abort | status | list")
