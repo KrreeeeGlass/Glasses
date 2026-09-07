@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | zero | hold | abort
 
-local VERSION="1.7.1"
+local VERSION="1.7.2"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -149,6 +149,7 @@ local function discover()
           local networkName="corner_"..relayId.."_"..remote.name
           local remoteName=remote.name
           thrusters[networkName]={name=networkName,kind=remote.kind,relayId=relayId,
+            remoteName=remoteName,
             device={setPowerNormalized=function(power)
               rednet.broadcast({type="set",controllerId=os.getComputerID(),
                 targetRelay=relayId,name=remoteName,power=power},REMOTE_PROTOCOL)
@@ -161,7 +162,14 @@ local function discover()
 end
 
 local function allStop()
-  for _,t in pairs(thrusters) do pcall(t.device.setPowerNormalized,0) end
+  local hasRemote=false
+  for _,t in pairs(thrusters) do
+    if t.relayId then hasRemote=true
+    else pcall(t.device.setPowerNormalized,0) end
+  end
+  if hasRemote and rednet then
+    pcall(rednet.broadcast,{type="stop_all",controllerId=os.getComputerID()},REMOTE_PROTOCOL)
+  end
 end
 
 local function relayHeartbeat()
@@ -448,11 +456,23 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
     maxRaw=math.max(maxRaw,raw[i])
   end
   local scale=maxRaw>cfg.maxPower and cfg.maxPower/maxRaw or 1
+  local remoteOutputs={}
   for i,m in ipairs(cfg.thrusters) do
-    local device=thrusters[m.name] and thrusters[m.name].device
-    if not device then allStop(); error("Thruster disappeared: "..m.name,0) end
-    local ok,err=pcall(device.setPowerNormalized,clamp(raw[i]*scale,0,cfg.maxPower))
-    if not ok then allStop(); error("Thruster failed "..m.name..": "..tostring(err),0) end
+    local thruster=thrusters[m.name]
+    if not thruster then allStop(); error("Thruster disappeared: "..m.name,0) end
+    local power=clamp(raw[i]*scale,0,cfg.maxPower)
+    if thruster.relayId then
+      remoteOutputs[thruster.relayId]=remoteOutputs[thruster.relayId] or {}
+      remoteOutputs[thruster.relayId][thruster.remoteName]=power
+    else
+      local ok,err=pcall(thruster.device.setPowerNormalized,power)
+      if not ok then allStop(); error("Thruster failed "..m.name..": "..tostring(err),0) end
+    end
+  end
+  if next(remoteOutputs) then
+    local ok,err=pcall(rednet.broadcast,{type="frame",controllerId=os.getComputerID(),
+      outputs=remoteOutputs},REMOTE_PROTOCOL)
+    if not ok then allStop(); error("Failed to transmit thruster frame: "..tostring(err),0) end
   end
 end
 

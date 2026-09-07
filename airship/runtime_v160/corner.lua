@@ -1,12 +1,12 @@
 -- Wireless corner actuator for the Create Propulsion airship autopilot.
 local ROLE_MARKER="CORNER_RELAY_MAIN"
-local VERSION="1.7.1"
+local VERSION="1.7.2"
 local PROTOCOL="sable_airship_thrusters_v1"
-local WATCHDOG_SECONDS=0.60
+local WATCHDOG_SECONDS=1.50
 local RELEASE_SECONDS=3.0
 local UPDATE_INTERVAL=120
 local REPOSITORY="KrreeeeGlass/Glasses"
-local RELEASE_REF="airship-v1.7.1"
+local RELEASE_REF="airship-v1.7.2"
 local LAUNCHER_PATH="/airship.lua"
 local RUNTIME_PATH="/airship_corner_runtime_v160.lua"
 local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
@@ -132,6 +132,19 @@ while true do
       controllerId=sender
       lastCommand=os.clock()
       if msg.type=="discover" then rednet.broadcast(advertisement(),PROTOCOL) end
+    elseif msg.type=="frame" and msg.controllerId==sender and type(msg.outputs)=="table" and
+        (not controllerId or controllerId==sender or os.clock()-lastCommand>RELEASE_SECONDS) then
+      local outputs=msg.outputs[relayId]
+      if type(outputs)=="table" then
+        if controllerId~=sender then print("Bound to center #"..sender.." by control frame") end
+        controllerId=sender
+        local succeeded=true
+        for name,t in pairs(thrusters) do
+          local power=math.max(0,math.min(1,tonumber(outputs[name]) or 0))
+          if not pcall(t.device.setPowerNormalized,power) then succeeded=false end
+        end
+        if succeeded then lastCommand=os.clock() else stop() end
+      end
     elseif msg.type=="set" and msg.controllerId==sender and
         (not controllerId or controllerId==sender or os.clock()-lastCommand>RELEASE_SECONDS) and
         msg.targetRelay==relayId and type(msg.name)=="string" then
@@ -143,6 +156,8 @@ while true do
         local ok=pcall(t.device.setPowerNormalized,power)
         if ok then lastCommand=os.clock() else stop() end
       end
+    elseif sender==controllerId and msg.type=="stop_all" and msg.controllerId==sender then
+      stop(); lastCommand=os.clock()
     elseif sender==controllerId and msg.type=="stop" and msg.targetRelay==relayId then
       stop(); lastCommand=os.clock()
     end
