@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.17.0"
+local VERSION="1.18.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -34,6 +34,8 @@ local DEFAULTS={
   thrusterResponseSeconds=0.50,
   yawPredictionSeconds=0.80,
   yawBoundaryPredictionSeconds=2.00,
+  yawStoppingLeadSeconds=1.10,
+  yawDriftPredictionSeconds=3.00,
   maxYawRate=10.0,
   maxYawAccel=8.0,
   yawApproachRateKp=0.55,
@@ -67,8 +69,6 @@ local currentMass=1
 local thrusterTelemetry={}
 local liftLevelCarry=0
 local liftRotation=0
-local yawPairRotation=0
-local lastPureYawSign=0
 
 local function clamp(v,lo,hi) return math.max(lo,math.min(hi,v)) end
 local function wrapAngle(a) return (a+180)%360-180 end
@@ -622,23 +622,7 @@ local function balancedYawAllocation(horizontal,targetYaw)
   local power=targetYaw/totalMoment
   if power<0 or power>cfg.maxPower then return nil end
   for _,actuator in ipairs(selected) do allocation[actuator.index]=power end
-  local pairs={}
-  local used={}
-  for first=1,#selected do
-    if not used[first] then
-      for second=first+1,#selected do
-        if not used[second] and
-            math.abs(selected[first].fx+selected[second].fx)<0.000001 and
-            math.abs(selected[first].fz+selected[second].fz)<0.000001 then
-          pairs[#pairs+1]={selected[first].index,selected[second].index}
-          used[first],used[second]=true,true
-          break
-        end
-      end
-    end
-  end
-  if #pairs~=2 then return nil end
-  return allocation,pairs
+  return allocation
 end
 
 local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
@@ -661,8 +645,8 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
   local targetYaw=yawTorque*4
   local pureYaw=math.abs(targetX)<0.0000001 and math.abs(targetZ)<0.0000001 and
     math.abs(targetYaw)>=0.0000001
-  local allocation,yawPairs
-  if pureYaw then allocation,yawPairs=balancedYawAllocation(horizontal,targetYaw) end
+  local allocation
+  if pureYaw then allocation=balancedYawAllocation(horizontal,targetYaw) end
   allocation=allocation or minimumThrustAllocation(horizontal,targetX,targetZ,targetYaw)
   if not allocation then
     -- Preserve direction when a combined request exceeds an actuator limit.
@@ -680,31 +664,17 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
 
 
   -- Version 1.1.5 floors ComputerCraft throttle to 15 levels and applies a
-  -- ten-tick startup/fade envelope. Keep a chosen balanced pair continuously
-  -- active during a correction instead of PWM-resetting its spool-up.
+  -- ten-tick startup/fade envelope. A pure spin always drives all four
+  -- force-balanced yaw thrusters at the same stable discrete level.
   local pureYawLevels
-  if pureYaw and allocation and yawPairs then
+  if pureYaw and allocation then
     local groupPower
     for _,power in pairs(allocation) do groupPower=power break end
     local maxLevel=math.floor(clamp(cfg.maxPower,0,1)*15+0.0000001)
-    local totalPairLevels=math.floor((groupPower or 0)*30+0.5)
-    totalPairLevels=math.max(1,totalPairLevels)
-    totalPairLevels=clamp(totalPairLevels,0,maxLevel*2)
-    local baseLevel=math.floor(totalPairLevels/2)
-    local extras=totalPairLevels%2
-    local yawSign=targetYaw>0 and 1 or -1
-    if yawSign~=lastPureYawSign then
-      yawPairRotation=(yawPairRotation%2)+1
-      lastPureYawSign=yawSign
-    end
+    local level=math.floor((groupPower or 0)*15+0.5)
+    level=clamp(math.max(1,level),0,maxLevel)
     pureYawLevels={}
-    for pairIndex,pair in ipairs(yawPairs) do
-      local relative=(pairIndex-yawPairRotation)%2
-      local level=baseLevel+(relative<extras and 1 or 0)
-      pureYawLevels[pair[1]],pureYawLevels[pair[2]]=level,level
-    end
-  else
-    lastPureYawSign=0
+    for index in pairs(allocation) do pureYawLevels[index]=level end
   end
 
   -- Create Propulsion quantizes normalized power to 15 redstone steps. Convert
@@ -813,7 +783,9 @@ local function yawCommandFor(yawError,headingYawRate,aligned)
   -- Decide from the heading we are approaching, not only the heading sampled
   -- now. The extra lead covers the control/network interval and the positive
   -- impulse left while the old bank fades and the braking bank spools.
-  local prediction=clamp(tonumber(cfg.yawPredictionSeconds) or 0.80,response,2)
+  local prediction=clamp(math.max(
+    tonumber(cfg.yawPredictionSeconds) or 0.80,
+    tonumber(cfg.yawStoppingLeadSeconds) or 1.10),response,2)
   local projectedError=yawError-headingYawRate*prediction
   local crossing=yawError*headingYawRate>0 and yawError*projectedError<=0
   local planningError=crossing and 0 or projectedError
@@ -821,11 +793,24 @@ local function yawCommandFor(yawError,headingYawRate,aligned)
   -- Inside the allowed heading band, look farther ahead for slow drift. This
   -- starts a short damping correction before velocity carries the ship across
   -- either boundary instead of waiting for the angular error to exceed it.
-  local boundaryPrediction=clamp(
-    tonumber(cfg.yawBoundaryPredictionSeconds) or 2.00,prediction,4)
+  local boundaryPrediction=clamp(math.max(
+    tonumber(cfg.yawBoundaryPredictionSeconds) or 2.00,
+    tonumber(cfg.yawDriftPredictionSeconds) or 3.00),prediction,5)
   local boundaryError=yawError-headingYawRate*boundaryPrediction
   local willLeaveBand=math.abs(yawError)<=cfg.yawDeadband and
     math.abs(boundaryError)>=cfg.yawDeadband
+  local gain=math.max(20,tonumber(cfg.yawAccelPerPower) or 200)
+  -- All four yaw thrusters now share at least one 1/15 power step. Use the
+  -- weaker of that measured acceleration and the safety limit to calculate
+  -- the explicit angular stopping distance from current velocity.
+  local brakingAccel=math.max(0.1,math.min(yawAccel,gain/15))
+  local angularSpeed=math.abs(headingYawRate)
+  local stoppingDistance=angularSpeed*prediction+
+    angularSpeed*angularSpeed/(2*brakingAccel)
+  local remainingToBand=math.max(0,math.abs(yawError)-cfg.yawDeadband)
+  local mustBrake=math.abs(yawError)>cfg.yawDeadband and
+    yawError*headingYawRate>0 and angularSpeed>0.001 and
+    remainingToBand<=stoppingDistance
   -- Maximum rate that can survive the response delay and then decelerate over
   -- the remaining angle: distance = rate*delay + rate^2/(2*acceleration).
   local brakingRate=(math.sqrt((yawAccel*response)^2+
@@ -836,20 +821,21 @@ local function yawCommandFor(yawError,headingYawRate,aligned)
   -- If the projected heading has already crossed the target, request zero
   -- rate immediately. Rate feedback then switches to counter-thrust now,
   -- instead of waiting for the sampled angle itself to overshoot.
-  if crossing then desiredRate=0 end
+  if crossing or mustBrake then desiredRate=0 end
   if aligned then desiredRate=desiredRate*cfg.movingYawScale end
 
   -- Track the planned angular velocity. When the measured yaw rate is too high
   -- for the remaining angle, this becomes braking thrust before overshoot.
   local desiredAccel=clamp((desiredRate-headingYawRate)*cfg.yawRateKp,
     -cfg.maxYawAccel,cfg.maxYawAccel)
-  if usableError<=0 and not willLeaveBand and
+  if usableError<=0 and not willLeaveBand and not mustBrake and
       math.abs(headingYawRate)<=cfg.yawRateDeadband then
-    return 0,desiredRate,willLeaveBand,boundaryError
+    return 0,desiredRate,false,projectedError
   end
-  local gain=math.max(20,tonumber(cfg.yawAccelPerPower) or 200)
   local command=clamp(desiredAccel/gain,-cfg.yawPowerLimit,cfg.yawPowerLimit)
-  return command*cfg.yawActuatorPolarity,desiredRate,willLeaveBand,boundaryError
+  return command*cfg.yawActuatorPolarity,desiredRate,
+    willLeaveBand or mustBrake or crossing,
+    willLeaveBand and boundaryError or projectedError
 end
 
 local function calibrationPulse(commandX,commandZ,commandYaw,targetY,seconds)
@@ -961,7 +947,7 @@ local function calibrateActuators()
     }
 
     print("Testing logical +yaw...")
-    local yawPulse=1/30
+    local yawPulse=1/15
     local yawSeconds=0.60
     local _,yawDelta,yawRateDelta,_,yawStartRate=
       calibrationPulse(0,0,yawPulse,calibrationY,yawSeconds)
@@ -1130,11 +1116,17 @@ local function controlLoop()
         message=string.format("ALIGNING %.1f deg | rate %.1f -> %.1f",
           yawError,headingYawRate,plannedYawRate)
       elseif preemptiveYawBrake then
+        bx,bz=0,0
         message=string.format("YAW BRAKE | now %.1f -> projected %.1f",
           yawError,boundaryYawError)
       elseif math.abs(yawError)>cfg.yawDeadband then
+        bx,bz=0,0
         message=string.format("FLYING | yaw %.1f | rate %.1f -> %.1f",
           yawError,headingYawRate,plannedYawRate)
+      elseif math.abs(yawCommand)>0.0000001 then
+        bx,bz=0,0
+        message=string.format("YAW DAMPING | error %.1f | rate %.1f",
+          yawError,headingYawRate)
       else
         message="HEADING LOCKED | translation active"
       end
