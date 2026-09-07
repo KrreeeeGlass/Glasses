@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | zero | hold | abort
 
-local VERSION="1.8.0"
+local VERSION="1.8.1"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -494,13 +494,35 @@ local function normalizedAxisForce(acceleration,field)
 end
 
 local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
-  local requested={x=bodyX,y=vertical,z=bodyZ,yaw=yawTorque}
   local raw={}
+  local horizontal={}
   for i,m in ipairs(cfg.thrusters) do
-    local moment=(m.rx or 0)*(m.fz or 0)-(m.rz or 0)*(m.fx or 0)
-    local demand=(m.fx or 0)*requested.x+(m.fy or 0)*requested.y+
-      (m.fz or 0)*requested.z+moment*requested.yaw
-    raw[i]=math.max(0,demand)
+    raw[i]=0
+    if (m.fy or 0)<=0 then
+      -- Y component of r x F. The previous release used the negative of this.
+      local moment=(m.rz or 0)*(m.fx or 0)-(m.rx or 0)*(m.fz or 0)
+      horizontal[#horizontal+1]={index=i,fx=m.fx or 0,fz=m.fz or 0,
+        moment=moment,p=0}
+    end
+  end
+
+  -- Two thrusters provide each translation direction and four provide either
+  -- yaw direction, so these are the exact aggregate targets for this layout.
+  local targetX=bodyX*2
+  local targetZ=bodyZ*2
+  local targetYaw=yawTorque*4
+  local minimum,maximum=0,0
+  for _,a in ipairs(horizontal) do
+    -- The symmetric layout makes the X, Z and yaw rows orthogonal. This is its
+    -- minimum-norm inverse before enforcing one-way (nonnegative) thrust.
+    a.p=a.fx*targetX/4+a.fz*targetZ/4+a.moment*targetYaw/8
+    minimum=math.min(minimum,a.p)
+  end
+  local shift=-minimum -- common thrust is a zero-force/zero-torque null vector
+  for _,a in ipairs(horizontal) do maximum=math.max(maximum,a.p+shift) end
+  local scale=maximum>cfg.maxPower and cfg.maxPower/maximum or 1
+  for _,a in ipairs(horizontal) do
+    raw[a.index]=(a.p+shift)*scale
   end
 
   -- Create Propulsion quantizes normalized power to 15 redstone steps. Convert
@@ -570,7 +592,7 @@ local function horizontalCommand(p,target,yaw)
   local ex,ez=target.x-p.x,target.z-p.z
   local distance=math.sqrt(ex*ex+ez*ez)
   if distance<0.001 then return 0,0,distance end
-  local speedLimit=math.min(cfg.maxHorizontalSpeed,math.max(0.35,distance*cfg.positionKp))
+  local speedLimit=math.min(cfg.maxHorizontalSpeed,distance*cfg.positionKp)
   local desiredX,desiredZ=ex/distance*speedLimit,ez/distance*speedLimit
   local accelX=clamp((desiredX-velocity.x)*cfg.horizontalAccelKp,
     -cfg.maxHorizontalAccel,cfg.maxHorizontalAccel)
