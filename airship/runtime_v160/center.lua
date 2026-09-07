@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | zero | hold | abort
 
-local VERSION="1.7.2"
+local VERSION="1.8.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -20,12 +20,15 @@ local DEFAULTS={
   horizontalTolerance=1.5,
   altitudeTolerance=1.0,
   positionKp=0.22,
-  velocityKp=0.20,
+  horizontalAccelKp=1.0,
+  maxHorizontalAccel=2.0,
   altitudeKp=0.18,
-  verticalVelocityKp=0.16,
-  yawKp=0.025,
-  yawRateKd=0.018,
-  hoverPower=0.50,
+  verticalAccelKp=1.0,
+  maxVerticalAccel=3.0,
+  gravity=11.0,
+  yawForceKp=0.002,
+  yawRateForceKd=0.004,
+  maxYawPower=0.12,
   maxPower=0.80,
   sensorFailureLimit=5,
   telemetryProtocol="sable_hud_v1",
@@ -35,11 +38,17 @@ local cfg,destination,phase,message
 local controller
 local controllerName
 local thrusters={}
+local relaySenders={}
 local relayCount=0
 local wirelessStatus="MISSING"
 local running=true
 local velocity={x=0,y=0,z=0}
 local yawRate=0
+local currentMass=1
+local thrusterTelemetry={}
+local liftLevelCarry=0
+local liftRotation=0
+local powerLevelCarry={}
 
 local function clamp(v,lo,hi) return math.max(lo,math.min(hi,v)) end
 local function wrapAngle(a) return (a+180)%360-180 end
@@ -120,6 +129,7 @@ local function discover()
     end
   end
   thrusters={}
+  relaySenders={}
   relayCount=0
   for _,name in ipairs(peripheral.getNames()) do
     for _,kind in ipairs({peripheral.getType(name)}) do
@@ -144,6 +154,7 @@ local function discover()
         type(msg.relayId)=="string" and type(msg.thrusters)=="table" then
       local relayId=msg.relayId
       seen[relayId]=true
+      relaySenders[relayId]=sender
       for _,remote in ipairs(msg.thrusters) do
         if type(remote.name)=="string" and type(remote.kind)=="string" then
           local networkName="corner_"..relayId.."_"..remote.name
@@ -227,6 +238,7 @@ local function readControllerPose()
   velocity.y=values.linear_velocity_y
   velocity.z=values.linear_velocity_z
   yawRate=math.deg(values.angular_velocity_y)
+  currentMass=values.mass
   return {x=values.position_x,y=values.position_y,z=values.position_z},yaw,nil,{
     mass=values.mass,rawYaw=rawYaw,values=values,
   }
@@ -427,8 +439,8 @@ local function setup()
   print(string.format("  Controller graph ready: mass %.2f at %.2f %.2f %.2f",
     physics.mass,p.x,p.y,p.z))
   cfg.cruiseY=tonumber(ask("Cruise altitude",cfg.cruiseY)) or cfg.cruiseY
-  cfg.hoverPower=tonumber(ask("Estimated hover throttle 0..1",cfg.hoverPower)) or cfg.hoverPower
-  cfg.maxPower=tonumber(ask("Maximum initial throttle 0..1",cfg.maxPower)) or cfg.maxPower
+  cfg.maxPower=clamp(tonumber(ask("Maximum allowed throttle 0..1",cfg.maxPower)) or
+    cfg.maxPower,0.05,1)
   phase="idle"
   destination=nil
   save()
@@ -445,22 +457,94 @@ local function bindConfigured()
   end
 end
 
+-- Full-power force in Propulsion Newtons. Ion is the exact configured value in
+-- this modpack; live relay telemetry continuously corrects it for real output.
+local FALLBACK_FULL_THRUST={ion_thruster=1000}
+
+local function thrusterCapacity(name)
+  local device=thrusters[name]
+  local observed=thrusterTelemetry[name]
+  return observed and observed.fullThrust or
+    (device and FALLBACK_FULL_THRUST[device.kind]) or 1000
+end
+
+local function totalLiftCapacity()
+  local total,count=0,0
+  for _,m in ipairs(cfg.thrusters or {}) do
+    if (m.fy or 0)>0 then
+      total=total+thrusterCapacity(m.name)
+      count=count+1
+    end
+  end
+  return total,count
+end
+
+
+local function normalizedAxisForce(acceleration,field)
+  if math.abs(acceleration)<0.000001 then return 0 end
+  local direction=acceleration>0 and 1 or -1
+  local capacity=0
+  for _,m in ipairs(cfg.thrusters or {}) do
+    if ((m[field] or 0)*direction)>0 then
+      capacity=capacity+thrusterCapacity(m.name)
+    end
+  end
+  if capacity<=0 then return 0 end
+  return clamp(currentMass*acceleration/capacity,-cfg.maxPower,cfg.maxPower)
+end
+
 local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
   local requested={x=bodyX,y=vertical,z=bodyZ,yaw=yawTorque}
-  local raw,maxRaw={},0
+  local raw={}
   for i,m in ipairs(cfg.thrusters) do
     local moment=(m.rx or 0)*(m.fz or 0)-(m.rz or 0)*(m.fx or 0)
     local demand=(m.fx or 0)*requested.x+(m.fy or 0)*requested.y+
       (m.fz or 0)*requested.z+moment*requested.yaw
     raw[i]=math.max(0,demand)
-    maxRaw=math.max(maxRaw,raw[i])
   end
-  local scale=maxRaw>cfg.maxPower and cfg.maxPower/maxRaw or 1
+
+  -- Create Propulsion quantizes normalized power to 15 redstone steps. Convert
+  -- the requested total lift into aggregate steps, dither the fractional step
+  -- over time, and rotate extra steps between corners to avoid violent jumps.
+  local _,liftCount=totalLiftCapacity()
+  if liftCount>0 then
+    local requestedLevels=clamp(vertical,0,cfg.maxPower)*15*liftCount
+    liftLevelCarry=liftLevelCarry+requestedLevels
+    local totalLevels=math.floor(liftLevelCarry+0.0000001)
+    liftLevelCarry=liftLevelCarry-totalLevels
+    local maxLevel=math.floor(clamp(cfg.maxPower,0,1)*15+0.0000001)
+    totalLevels=clamp(totalLevels,0,maxLevel*liftCount)
+    local baseLevel=math.floor(totalLevels/liftCount)
+    local extras=totalLevels%liftCount
+    liftRotation=(liftRotation%liftCount)+1
+    local liftIndex=0
+    for i,m in ipairs(cfg.thrusters) do
+      if (m.fy or 0)>0 then
+        liftIndex=liftIndex+1
+        local relative=(liftIndex-liftRotation)%liftCount
+        raw[i]=(baseLevel+(relative<extras and 1 or 0))/15
+      end
+    end
+  end
+
   local remoteOutputs={}
   for i,m in ipairs(cfg.thrusters) do
     local thruster=thrusters[m.name]
     if not thruster then allStop(); error("Thruster disappeared: "..m.name,0) end
-    local power=clamp(raw[i]*scale,0,cfg.maxPower)
+    local power=clamp(raw[i],0,cfg.maxPower)
+    if (m.fy or 0)<=0 then
+      -- Dither sub-step horizontal/yaw commands instead of rounding them to
+      -- either zero or one permanently violent redstone step.
+      if power<=0 then
+        powerLevelCarry[m.name]=0
+      else
+        local carry=(powerLevelCarry[m.name] or ((i-1)/#cfg.thrusters))+power*15
+        local level=math.floor(carry+0.0000001)
+        powerLevelCarry[m.name]=carry-level
+        local maxLevel=math.floor(clamp(cfg.maxPower,0,1)*15+0.0000001)
+        power=clamp(level,0,maxLevel)/15
+      end
+    end
     if thruster.relayId then
       remoteOutputs[thruster.relayId]=remoteOutputs[thruster.relayId] or {}
       remoteOutputs[thruster.relayId][thruster.remoteName]=power
@@ -488,17 +572,25 @@ local function horizontalCommand(p,target,yaw)
   if distance<0.001 then return 0,0,distance end
   local speedLimit=math.min(cfg.maxHorizontalSpeed,math.max(0.35,distance*cfg.positionKp))
   local desiredX,desiredZ=ex/distance*speedLimit,ez/distance*speedLimit
-  local cmdX=clamp((desiredX-velocity.x)*cfg.velocityKp,-1,1)
-  local cmdZ=clamp((desiredZ-velocity.z)*cfg.velocityKp,-1,1)
-  local bx,bz=worldToBody(cmdX,cmdZ,yaw)
-  return bx,bz,distance
+  local accelX=clamp((desiredX-velocity.x)*cfg.horizontalAccelKp,
+    -cfg.maxHorizontalAccel,cfg.maxHorizontalAccel)
+  local accelZ=clamp((desiredZ-velocity.z)*cfg.horizontalAccelKp,
+    -cfg.maxHorizontalAccel,cfg.maxHorizontalAccel)
+  local bodyAccelX,bodyAccelZ=worldToBody(accelX,accelZ,yaw)
+  return normalizedAxisForce(bodyAccelX,"fx"),
+    normalizedAxisForce(bodyAccelZ,"fz"),distance
 end
 
 local function verticalCommand(p,targetY)
   local errorY=targetY-p.y
   local maxVelocity=errorY>=0 and cfg.maxClimbSpeed or cfg.maxDescentSpeed
   local desired=clamp(errorY*cfg.altitudeKp,-maxVelocity,maxVelocity)
-  return clamp(cfg.hoverPower+(desired-velocity.y)*cfg.verticalVelocityKp,0,cfg.maxPower),errorY
+  local acceleration=clamp((desired-velocity.y)*cfg.verticalAccelKp,
+    -cfg.maxVerticalAccel,cfg.maxVerticalAccel)
+  local capacity=totalLiftCapacity()
+  if capacity<=0 then return 0,errorY end
+  local requiredForce=currentMass*math.max(0,cfg.gravity+acceleration)
+  return clamp(requiredForce/capacity,0,cfg.maxPower),errorY
 end
 
 local function sendTelemetry(p,yaw)
@@ -515,6 +607,42 @@ local function sendTelemetry(p,yaw)
     string.format("Speed %.1f | distance %.1f",math.sqrt(velocity.x^2+velocity.y^2+velocity.z^2),distance),
     message or "",
   }},cfg.telemetryProtocol)
+end
+
+local function relayTelemetryLoop()
+  while running do
+    local sender,packet=rednet.receive(REMOTE_PROTOCOL,1.0)
+    if sender and type(packet)=="table" and packet.type=="telemetry" and
+        type(packet.relayId)=="string" and relaySenders[packet.relayId]==sender and
+        type(packet.thrusters)=="table" then
+      for _,sample in ipairs(packet.thrusters) do
+        if type(sample)=="table" and type(sample.name)=="string" then
+          local networkName="corner_"..packet.relayId.."_"..sample.name
+          local device=thrusters[networkName]
+          if device then
+            local record=thrusterTelemetry[networkName] or {
+              fullThrust=FALLBACK_FULL_THRUST[device.kind] or 1000,
+            }
+            local power=tonumber(sample.power)
+            local thrust=tonumber(sample.thrust)
+            if power and thrust and power>0.05 and thrust>0 then
+              local observed=thrust/power
+              if observed>10 and observed<10000000 then
+                -- Follow increases immediately; decay gently for altitude,
+                -- obstruction or energy loss without trusting startup ramp-up.
+                record.fullThrust=math.max(observed,record.fullThrust*0.995)
+              end
+            end
+            record.power=power
+            record.thrust=thrust
+            record.energy=tonumber(sample.energy)
+            record.obstruction=tonumber(sample.obstruction)
+            thrusterTelemetry[networkName]=record
+          end
+        end
+      end
+    end
+  end
 end
 
 local function controlLoop()
@@ -536,8 +664,9 @@ local function controlLoop()
     else
       failures=0
       local yawError=wrapAngle(cfg.targetYaw-yaw)
-      local yawCommand=clamp(yawError*cfg.yawKp-yawRate*cfg.yawRateKd,-0.5,0.5)
-      local bx,bz,vertical=0,0,cfg.hoverPower
+      local yawCommand=clamp(yawError*cfg.yawForceKp-yawRate*cfg.yawRateForceKd,
+        -cfg.maxYawPower,cfg.maxYawPower)
+      local bx,bz,vertical=0,0,0
 
       if phase=="climb" then
         vertical=verticalCommand(p,cfg.cruiseY)
@@ -598,7 +727,9 @@ local function runController()
   print(string.format("Autopilot %s -> %.1f %.1f %.1f",VERSION,destination.x,destination.y,destination.z))
   print(string.format("Current %.1f %.1f %.1f | heading %.2f",p.x,p.y,p.z,yaw))
   print("Press X or Backspace for EMERGENCY STOP")
-  local ok,err=xpcall(function() parallel.waitForAny(controlLoop,commandLoop) end,debug.traceback)
+  local ok,err=xpcall(function()
+    parallel.waitForAny(controlLoop,commandLoop,relayTelemetryLoop)
+  end,debug.traceback)
   allStop()
   if not ok then phase="aborted"; save(); error(err,0) end
 end

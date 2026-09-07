@@ -1,12 +1,12 @@
 -- Wireless corner actuator for the Create Propulsion airship autopilot.
 local ROLE_MARKER="CORNER_RELAY_MAIN"
-local VERSION="1.7.2"
+local VERSION="1.8.0"
 local PROTOCOL="sable_airship_thrusters_v1"
 local WATCHDOG_SECONDS=1.50
 local RELEASE_SECONDS=3.0
 local UPDATE_INTERVAL=120
 local REPOSITORY="KrreeeeGlass/Glasses"
-local RELEASE_REF="airship-v1.7.2"
+local RELEASE_REF="airship-v1.8.0"
 local LAUNCHER_PATH="/airship.lua"
 local RUNTIME_PATH="/airship_corner_runtime_v160.lua"
 local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
@@ -32,6 +32,25 @@ local function advertisement()
   local advertised={}
   for name,t in pairs(thrusters) do advertised[#advertised+1]={name=name,kind=t.kind} end
   return {type="advertise",relayId=relayId,thrusters=advertised,version=VERSION}
+end
+
+local function readNumber(device,method)
+  if type(device[method])~="function" then return nil end
+  local ok,value=pcall(device[method])
+  if ok and type(value)=="number" then return value end
+  return nil
+end
+
+local function telemetrySnapshot()
+  local samples={}
+  for name,t in pairs(thrusters) do
+    samples[#samples+1]={name=name,kind=t.kind,
+      power=readNumber(t.device,"getPower"),
+      thrust=readNumber(t.device,"getCurrentThrustPN"),
+      energy=readNumber(t.device,"getEnergyAmountFe"),
+      obstruction=readNumber(t.device,"getObstruction")}
+  end
+  return samples
 end
 
 local function discover()
@@ -138,12 +157,17 @@ while true do
       if type(outputs)=="table" then
         if controllerId~=sender then print("Bound to center #"..sender.." by control frame") end
         controllerId=sender
+        local previousTelemetry=telemetrySnapshot()
         local succeeded=true
         for name,t in pairs(thrusters) do
           local power=math.max(0,math.min(1,tonumber(outputs[name]) or 0))
           if not pcall(t.device.setPowerNormalized,power) then succeeded=false end
         end
-        if succeeded then lastCommand=os.clock() else stop() end
+        if succeeded then
+          lastCommand=os.clock()
+          pcall(rednet.send,sender,{type="telemetry",relayId=relayId,
+            thrusters=previousTelemetry,version=VERSION},PROTOCOL)
+        else stop() end
       end
     elseif msg.type=="set" and msg.controllerId==sender and
         (not controllerId or controllerId==sender or os.clock()-lastCommand>RELEASE_SECONDS) and

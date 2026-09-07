@@ -60,6 +60,8 @@ airship status
 
 `airship setup` automatically maps the supported square layout: four lift thrusters below the corners plus paired horizontal thrusters on the four outer edges. It derives corner position and force direction from the stable relay/thruster names, so the twelve thrusters no longer require individual direction entry.
 
+Lift is mass-aware: the center combines the Diagram's live mass with Sable gravity and the corner relays' measured Create Propulsion thrust. Because `setPowerNormalized` is internally quantized to fifteen redstone levels, fractional lift is distributed and rotated across the four corners over time instead of switching all four thrusters between coarse levels together. Horizontal motion and heading corrections are force-limited and use the same sub-step dithering.
+
 Updates are automatic. The center refreshes its launcher and runtime at every boot and before every `airship` command. Corner relays also check GitHub while idle and install updates automatically; they never update or reboot while a center is actively commanding thrust.
 
 Every published airship change increments the runtime version. The launcher prints the downloaded and running version on the center, and each corner prints its running version at startup so all five computers can be checked at a glance.
