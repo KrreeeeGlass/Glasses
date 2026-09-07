@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.16.0"
+local VERSION="1.17.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -33,6 +33,7 @@ local DEFAULTS={
   yawPowerLimit=0.06,
   thrusterResponseSeconds=0.50,
   yawPredictionSeconds=0.80,
+  yawBoundaryPredictionSeconds=2.00,
   maxYawRate=10.0,
   maxYawAccel=8.0,
   yawApproachRateKp=0.55,
@@ -817,6 +818,14 @@ local function yawCommandFor(yawError,headingYawRate,aligned)
   local crossing=yawError*headingYawRate>0 and yawError*projectedError<=0
   local planningError=crossing and 0 or projectedError
   local usableError=math.max(0,math.abs(planningError)-cfg.yawDeadband)
+  -- Inside the allowed heading band, look farther ahead for slow drift. This
+  -- starts a short damping correction before velocity carries the ship across
+  -- either boundary instead of waiting for the angular error to exceed it.
+  local boundaryPrediction=clamp(
+    tonumber(cfg.yawBoundaryPredictionSeconds) or 2.00,prediction,4)
+  local boundaryError=yawError-headingYawRate*boundaryPrediction
+  local willLeaveBand=math.abs(yawError)<=cfg.yawDeadband and
+    math.abs(boundaryError)>=cfg.yawDeadband
   -- Maximum rate that can survive the response delay and then decelerate over
   -- the remaining angle: distance = rate*delay + rate^2/(2*acceleration).
   local brakingRate=(math.sqrt((yawAccel*response)^2+
@@ -834,12 +843,13 @@ local function yawCommandFor(yawError,headingYawRate,aligned)
   -- for the remaining angle, this becomes braking thrust before overshoot.
   local desiredAccel=clamp((desiredRate-headingYawRate)*cfg.yawRateKp,
     -cfg.maxYawAccel,cfg.maxYawAccel)
-  if usableError<=0 and math.abs(headingYawRate)<=cfg.yawRateDeadband then
-    return 0,desiredRate
+  if usableError<=0 and not willLeaveBand and
+      math.abs(headingYawRate)<=cfg.yawRateDeadband then
+    return 0,desiredRate,willLeaveBand,boundaryError
   end
   local gain=math.max(20,tonumber(cfg.yawAccelPerPower) or 200)
   local command=clamp(desiredAccel/gain,-cfg.yawPowerLimit,cfg.yawPowerLimit)
-  return command*cfg.yawActuatorPolarity,desiredRate
+  return command*cfg.yawActuatorPolarity,desiredRate,willLeaveBand,boundaryError
 end
 
 local function calibrationPulse(commandX,commandZ,commandYaw,targetY,seconds)
@@ -1082,7 +1092,8 @@ local function controlLoop()
         end
       end
 
-      local yawCommand,plannedYawRate=yawCommandFor(yawError,headingYawRate,headingAligned)
+      local yawCommand,plannedYawRate,preemptiveYawBrake,boundaryYawError=
+        yawCommandFor(yawError,headingYawRate,headingAligned)
       local bx,bz,vertical=0,0,0
 
       if phase=="climb" then
@@ -1118,6 +1129,9 @@ local function controlLoop()
         bx,bz=0,0
         message=string.format("ALIGNING %.1f deg | rate %.1f -> %.1f",
           yawError,headingYawRate,plannedYawRate)
+      elseif preemptiveYawBrake then
+        message=string.format("YAW BRAKE | now %.1f -> projected %.1f",
+          yawError,boundaryYawError)
       elseif math.abs(yawError)>cfg.yawDeadband then
         message=string.format("FLYING | yaw %.1f | rate %.1f -> %.1f",
           yawError,headingYawRate,plannedYawRate)
