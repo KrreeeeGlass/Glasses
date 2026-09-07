@@ -2,9 +2,9 @@
 local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Position and heading come from the Gadgets & Gizmos Advanced Navigation Table.
 -- Fly:   airship goto X Y Z
--- Other: airship status | list | setup | zero | hold | abort
+-- Other: airship status | list | controller | setup | zero | hold | abort
 
-local VERSION="1.6.6"
+local VERSION="1.6.7"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -227,6 +227,97 @@ local function listPeripherals()
   table.sort(names)
   print("Thrusters ("..tostring(#names).."):")
   for _,n in ipairs(names) do print("  "..n.." ["..thrusters[n].kind.."]") end
+end
+
+local function hasPeripheralType(name,expected)
+  for _,kind in ipairs({peripheral.getType(name)}) do
+    if kind==expected then return true end
+  end
+  return false
+end
+
+-- Read-only inventory of everything CC:Tweaked can currently see through the
+-- Advanced Contraption Controller. The report is also saved because the
+-- terminal is usually too small to display every method and graph variable.
+local function probeContraptionController()
+  local controllerName=nil
+  for _,name in ipairs(peripheral.getNames()) do
+    if hasPeripheralType(name,"advanced_contraption_controller") then
+      controllerName=name
+      break
+    end
+  end
+  if not controllerName then
+    error("Advanced Contraption Controller not detected. It must directly touch the center computer or share its wired-modem network.",0)
+  end
+
+  local controller=peripheral.wrap(controllerName)
+  local lines={}
+  local function emit(value)
+    local line=tostring(value)
+    print(line)
+    lines[#lines+1]=line
+  end
+  local function encoded(value)
+    if type(value)=="table" then return textutils.serialize(value) end
+    if value==nil then return "nil" end
+    return tostring(value)
+  end
+  local function readMethod(method,...)
+    if type(controller[method])~="function" then
+      emit(method..": MISSING")
+      return nil
+    end
+    local result=table.pack(pcall(controller[method],...))
+    if not result[1] then
+      emit(method..": ERROR - "..tostring(result[2]))
+      return nil
+    end
+    if result.n==1 then
+      emit(method..": OK")
+      return nil
+    end
+    local values={}
+    for i=2,result.n do values[#values+1]=encoded(result[i]) end
+    emit(method..": "..table.concat(values," | "))
+    return result[2]
+  end
+
+  emit("AIRSHIP CONTROLLER PROBE v"..VERSION)
+  emit("Peripheral: "..controllerName)
+  local types={peripheral.getType(controllerName)}
+  emit("Types: "..table.concat(types,", "))
+  local methods=peripheral.getMethods(controllerName) or {}
+  table.sort(methods)
+  emit("Methods ("..#methods.."):")
+  for _,method in ipairs(methods) do emit("  "..method) end
+
+  emit("--- SAFE READS ---")
+  for _,method in ipairs({"getName","listInputs","listInputIds","listChannels",
+      "listAxes","getAllSignals","getGraphStatus","getGraphDiagnostics"}) do
+    readMethod(method)
+  end
+  local variables=readMethod("listGraphVariables")
+  if type(variables)=="table" then
+    table.sort(variables)
+    emit("--- GRAPH VARIABLE VALUES ---")
+    if #variables==0 then emit("(none configured)") end
+    for _,variable in ipairs(variables) do
+      if type(controller.getGraphVariable)~="function" then
+        emit(variable..": getGraphVariable MISSING")
+      else
+        local ok,value=pcall(controller.getGraphVariable,variable)
+        emit(variable..": "..(ok and encoded(value) or "ERROR - "..tostring(value)))
+      end
+    end
+  end
+
+  local reportPath="/airship_controller_probe.txt"
+  local file=assert(fs.open(reportPath,"w"))
+  file.write(table.concat(lines,"\n"))
+  file.close()
+  emit("Saved full report: "..reportPath)
+  emit("View again with: edit "..reportPath)
 end
 
 local function ask(prompt,default)
@@ -475,6 +566,8 @@ if cmd=="setup" then
   setup()
 elseif cmd=="list" then
   listPeripherals()
+elseif cmd=="controller" or cmd=="probe" then
+  probeContraptionController()
 elseif cmd=="goto" then
   local x,y,z=tonumber(args[2]),tonumber(args[3]),tonumber(args[4])
   if not x or not y or not z then error("Usage: airship goto X Y Z",0) end
@@ -505,4 +598,5 @@ else
   print("  airship zero")
   print("  airship goto X Y Z")
   print("  airship hold | abort | status | list")
+  print("  airship controller  (safe controller probe)")
 end

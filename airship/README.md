@@ -5,7 +5,7 @@
 Run this exact same command on the center and all four corner computers:
 
 ```lua
-wget run https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/airship/unified/install.lua
+wget run https://raw.githubusercontent.com/KrreeeeGlass/Glasses/main/airship/unified_v3/install.lua
 ```
 
 The identical startup detects the role from local hardware: zero touching thrusters is the center controller; three touching thrusters is a corner relay.
@@ -34,6 +34,7 @@ Commands:
 
 ```lua
 airship list
+airship controller
 airship zero
 airship setup
 airship goto X Y Z
@@ -41,6 +42,8 @@ airship hold
 airship abort
 airship status
 ```
+
+`airship controller` performs a read-only probe of an attached Advanced Contraption Controller. It lists every exposed ComputerCraft method, safely reads its status and graph variables, and saves the complete report to `/airship_controller_probe.txt`. Physics values only appear after the controller graph exposes them as named variables.
 
 `airship zero` records the ship's current direction as heading 0. Run it while the ship is pointed in the exact direction you want it to preserve. No CC GPS constellation, Gimbal Sensor, or Create: Avionics is required.
 
