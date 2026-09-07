@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.11.0"
+local VERSION="1.11.1"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -597,6 +597,29 @@ local function minimumThrustAllocation(horizontal,targetX,targetZ,targetYaw)
   return best
 end
 
+local function balancedYawAllocation(horizontal,targetYaw)
+  if math.abs(targetYaw)<0.0000001 then return nil end
+  local allocation={}
+  local selected={}
+  local totalX,totalZ,totalMoment=0,0,0
+  for _,actuator in ipairs(horizontal) do
+    if actuator.moment*targetYaw>0 then
+      selected[#selected+1]=actuator
+      totalX=totalX+actuator.fx
+      totalZ=totalZ+actuator.fz
+      totalMoment=totalMoment+actuator.moment
+    end
+  end
+  -- The square layout has four same-sign yaw actuators whose translation
+  -- forces cancel. Refuse the shortcut if a different layout is detected.
+  if #selected~=4 or math.abs(totalX)>0.000001 or math.abs(totalZ)>0.000001 or
+      math.abs(totalMoment)<0.000001 then return nil end
+  local power=targetYaw/totalMoment
+  if power<0 or power>cfg.maxPower then return nil end
+  for _,actuator in ipairs(selected) do allocation[actuator.index]=power end
+  return allocation
+end
+
 local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
   local raw={}
   local horizontal={}
@@ -615,7 +638,10 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
   local targetX=bodyX*2
   local targetZ=bodyZ*2
   local targetYaw=yawTorque*4
-  local allocation=minimumThrustAllocation(horizontal,targetX,targetZ,targetYaw)
+  local pureYaw=math.abs(targetX)<0.0000001 and math.abs(targetZ)<0.0000001 and
+    math.abs(targetYaw)>=0.0000001
+  local allocation=pureYaw and balancedYawAllocation(horizontal,targetYaw) or nil
+  allocation=allocation or minimumThrustAllocation(horizontal,targetX,targetZ,targetYaw)
   if not allocation then
     -- Preserve direction when a combined request exceeds an actuator limit.
     local low,high=0,1
@@ -628,6 +654,20 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
   end
   for index,power in pairs(allocation or {}) do
     raw[index]=power
+  end
+
+
+  -- Pure yaw uses four equal thrusters. Quantize them as one synchronized group
+  -- so every pulse remains force-balanced instead of kicking the ship sideways.
+  local pureYawLevel
+  if pureYaw and allocation then
+    local groupPower
+    for _,power in pairs(allocation) do groupPower=power break end
+    local carry=(powerLevelCarry.__balancedYaw or 0)+(groupPower or 0)*15
+    pureYawLevel=math.floor(carry+0.0000001)
+    powerLevelCarry.__balancedYaw=carry-pureYawLevel
+    local maxLevel=math.floor(clamp(cfg.maxPower,0,1)*15+0.0000001)
+    pureYawLevel=clamp(pureYawLevel,0,maxLevel)
   end
 
   -- Create Propulsion quantizes normalized power to 15 redstone steps. Convert
@@ -662,7 +702,10 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
     if (m.fy or 0)<=0 then
       -- Dither sub-step horizontal/yaw commands instead of rounding them to
       -- either zero or one permanently violent redstone step.
-      if power<=0 then
+      if pureYawLevel and allocation and allocation[i] then
+        power=pureYawLevel/15
+        powerLevelCarry[m.name]=0
+      elseif power<=0 then
         powerLevelCarry[m.name]=0
       else
         local carry=(powerLevelCarry[m.name] or ((i-1)/#cfg.thrusters))+power*15
@@ -817,7 +860,7 @@ local function calibrateActuators()
 
     print("Testing logical +yaw...")
     local yawPulse=1/30
-    local yawSeconds=0.50
+    local yawSeconds=0.60
     local _,yawDelta,yawRateDelta,_,yawStartRate=
       calibrationPulse(0,0,yawPulse,vertical,yawSeconds)
     calibrationPulse(0,0,-yawPulse,vertical,yawSeconds)
