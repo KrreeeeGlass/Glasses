@@ -28,7 +28,18 @@ No ID or pairing step is required. Each relay reboots, finds the center automati
 
 The center computer uses the main installer shown above. Its wireless/Ender modem handles corner commands and SABLE Smart Glasses telemetry.
 
-The center must directly touch, or share a wired-modem network with, the **Advanced Navigation Table from Create Aeronautics: Gadgets & Gizmos**. Put a valid permanent reference target in the table and select it. The controller reads live world X/Y/Z from the table and derives yaw from the reference target and pointer angle. Keep that reference more than two blocks away.
+The center must directly touch, or share a wired-modem network with, the **Advanced Contraption Controller** whose shared graph is linked to the ship's Contraption Diagram. The autopilot now relies only on that graph for physics; the old navigation-table, lodestone, gimbal, and position-difference methods are not used.
+
+Expose these graph variables with these exact names:
+
+```text
+available
+mass
+position_x position_y position_z
+orientation_x orientation_y orientation_z orientation_w
+linear_velocity_x linear_velocity_y linear_velocity_z
+angular_velocity_x angular_velocity_y angular_velocity_z
+```
 
 Commands:
 
@@ -43,9 +54,9 @@ airship abort
 airship status
 ```
 
-`airship controller` performs a read-only probe of an attached Advanced Contraption Controller. It lists every exposed ComputerCraft method, safely reads its status and graph variables, and saves the complete report to `/airship_controller_probe.txt`. Physics values only appear after the controller graph exposes them as named variables.
+`airship controller` performs a read-only probe of the Advanced Contraption Controller. It lists every exposed ComputerCraft method, safely reads its status and graph variables, and saves the complete report to `/airship_controller_probe.txt`.
 
-`airship zero` records the ship's current direction as heading 0. Run it while the ship is pointed in the exact direction you want it to preserve. No CC GPS constellation, Gimbal Sensor, or Create: Avionics is required.
+`airship zero` records the current quaternion direction as heading 0. Run it while the ship is pointed in the exact direction you want it to preserve. No navigation table, lodestone compass, CC GPS constellation, or gimbal sensor is required.
 
 `airship setup` automatically maps the supported square layout: four lift thrusters below the corners plus paired horizontal thrusters on the four outer edges. It derives corner position and force direction from the stable relay/thruster names, so the twelve thrusters no longer require individual direction entry.
 

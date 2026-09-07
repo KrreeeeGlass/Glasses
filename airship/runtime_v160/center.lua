@@ -1,10 +1,11 @@
 -- Create Propulsion airship autopilot for CC:Tweaked (Minecraft 1.21.1).
 local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
--- Position and heading come from the Gadgets & Gizmos Advanced Navigation Table.
+-- Position, orientation and motion come directly from an Advanced Contraption
+-- Controller graph linked to the ship's Contraption Diagram.
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | zero | hold | abort
 
-local VERSION="1.6.8"
+local VERSION="1.7.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -12,7 +13,7 @@ local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
 local DEFAULTS={
   cruiseY=350,
   targetYaw=0,
-  navYawOffset=0,
+  controllerYawOffset=0,
   maxHorizontalSpeed=12,
   maxClimbSpeed=6,
   maxDescentSpeed=3,
@@ -31,14 +32,14 @@ local DEFAULTS={
 }
 
 local cfg,destination,phase,message
-local nav
+local controller
+local controllerName
 local thrusters={}
 local relayCount=0
 local wirelessStatus="MISSING"
 local running=true
 local velocity={x=0,y=0,z=0}
 local yawRate=0
-local lastPose=nil
 
 local function clamp(v,lo,hi) return math.max(lo,math.min(hi,v)) end
 local function wrapAngle(a) return (a+180)%360-180 end
@@ -55,15 +56,15 @@ local function copyDefaults(t)
   for k,v in pairs(DEFAULTS) do if t[k]==nil then t[k]=v end end
   return t
 end
-local function safeCall(obj,method,...)
-  if not obj or type(obj[method])~="function" then return nil,"missing "..method end
-  local out=table.pack(pcall(obj[method],...))
-  if not out[1] then return nil,out[2] end
-  return table.unpack(out,2,out.n)
+local function isFinite(value)
+  return type(value)=="number" and value==value and value~=math.huge and value~=-math.huge
 end
-local function isPosition(p)
-  return type(p)=="table" and type(p.x)=="number" and
-    type(p.y)=="number" and type(p.z)=="number"
+
+local function hasPeripheralType(name,expected)
+  for _,kind in ipairs({peripheral.getType(name)}) do
+    if kind==expected then return true end
+  end
+  return false
 end
 
 local function save()
@@ -106,11 +107,18 @@ local function openWireless()
 end
 
 local function discover()
-  nav=peripheral.find("navigation_table",function(_,p)
-    return type(p.getTablePosition)=="function" and
-      type(p.getTargetPosition)=="function" and
-      type(p.getCurrentAngle)=="function"
-  end)
+  controller=nil
+  controllerName=nil
+  for _,name in ipairs(peripheral.getNames()) do
+    if hasPeripheralType(name,"advanced_contraption_controller") then
+      local candidate=peripheral.wrap(name)
+      if type(candidate.getGraphVariable)=="function" then
+        controller=candidate
+        controllerName=name
+        break
+      end
+    end
+  end
   thrusters={}
   relayCount=0
   for _,name in ipairs(peripheral.getNames()) do
@@ -156,70 +164,83 @@ local function allStop()
   for _,t in pairs(thrusters) do pcall(t.device.setPowerNormalized,0) end
 end
 
--- The table reports its moving world position directly. The pointer angle is
--- measured in the ship/table frame. Comparing it with the world-space line to
--- the selected reference target gives ship yaw (0 = world +Z/south).
-local function readNavigationPose(updateMotion)
-  if not nav then return nil,nil,"Advanced Navigation Table missing" end
-  local p,positionError=safeCall(nav,"getTablePosition")
-  if not isPosition(p) then
-    return nil,nil,"table position unavailable: "..tostring(positionError or "not projected")
-  end
-  local target,targetError=safeCall(nav,"getTargetPosition")
-  if not isPosition(target) then
-    return p,nil,"insert/select a valid reference target in the Advanced Navigation Table: "..
-      tostring(targetError or "no target")
-  end
-  local angle,angleError=safeCall(nav,"getCurrentAngle")
-  if type(angle)~="number" then
-    return p,nil,"navigation angle unavailable: "..tostring(angleError)
-  end
-  local dx,dz=target.x-p.x,target.z-p.z
-  if dx*dx+dz*dz<4 then
-    return p,nil,"navigation reference is too close (keep it more than 2 blocks away)"
-  end
-  local worldBearing=math.deg(atan2(dx,dz)) -- 0 south, +90 east
-  local yaw=wrapAngle(worldBearing+angle-90+(cfg.navYawOffset or 0))
+local GRAPH_VARIABLES={
+  "available","mass",
+  "position_x","position_y","position_z",
+  "orientation_x","orientation_y","orientation_z","orientation_w",
+  "linear_velocity_x","linear_velocity_y","linear_velocity_z",
+  "angular_velocity_x","angular_velocity_y","angular_velocity_z",
+}
 
-  if updateMotion then
-    local now=os.clock()
-    if lastPose then
-      local dt=now-lastPose.time
-      if dt>=0.04 and dt<=1.0 then
-        local vx=(p.x-lastPose.x)/dt
-        local vy=(p.y-lastPose.y)/dt
-        local vz=(p.z-lastPose.z)/dt
-        local yr=wrapAngle(yaw-lastPose.yaw)/dt
-        if math.abs(vx)<100 and math.abs(vy)<100 and math.abs(vz)<100 and math.abs(yr)<720 then
-          velocity.x=velocity.x*0.60+vx*0.40
-          velocity.y=velocity.y*0.60+vy*0.40
-          velocity.z=velocity.z*0.60+vz*0.40
-          yawRate=yawRate*0.60+yr*0.40
-        end
-      end
-    end
-    lastPose={x=p.x,y=p.y,z=p.z,yaw=yaw,time=now}
-  end
-  return {x=p.x,y=p.y,z=p.z},yaw,nil,target
+local function readGraphVariable(name)
+  if not controller then return nil,"Advanced Contraption Controller missing" end
+  local ok,value=pcall(controller.getGraphVariable,name)
+  if not ok then return nil,name..": "..tostring(value) end
+  return value
 end
 
-local function navigationSummary()
-  if not nav then
-    print("Advanced nav:     MISSING")
+-- The graph provides world position/velocity and a normalized quaternion. Yaw
+-- is the world bearing of the ship's local +Z axis: 0 = world +Z, +90 = +X.
+local function readControllerPose()
+  if not controller then return nil,nil,"Advanced Contraption Controller missing" end
+  local values={}
+  for _,name in ipairs(GRAPH_VARIABLES) do
+    local value,err=readGraphVariable(name)
+    if value==nil then return nil,nil,"graph variable unavailable: "..tostring(err) end
+    values[name]=value
+  end
+  if values.available~=true then
+    return nil,nil,"controller graph reports available=false"
+  end
+  for name,value in pairs(values) do
+    if name~="available" and not isFinite(value) then
+      return nil,nil,"graph variable "..name.." is not a finite number"
+    end
+  end
+  if values.mass<=0 then return nil,nil,"controller graph reports invalid mass" end
+
+  local qx,qy,qz,qw=values.orientation_x,values.orientation_y,
+    values.orientation_z,values.orientation_w
+  local norm=math.sqrt(qx*qx+qy*qy+qz*qz+qw*qw)
+  if norm<0.000001 then return nil,nil,"orientation quaternion has zero length" end
+  qx,qy,qz,qw=qx/norm,qy/norm,qz/norm,qw/norm
+  local forwardX=2*(qx*qz+qw*qy)
+  local forwardZ=1-2*(qx*qx+qy*qy)
+  local rawYaw=math.deg(atan2(forwardX,forwardZ))
+  local yaw=wrapAngle(rawYaw+(cfg.controllerYawOffset or 0))
+
+  velocity.x=values.linear_velocity_x
+  velocity.y=values.linear_velocity_y
+  velocity.z=values.linear_velocity_z
+  yawRate=math.deg(values.angular_velocity_y)
+  return {x=values.position_x,y=values.position_y,z=values.position_z},yaw,nil,{
+    mass=values.mass,rawYaw=rawYaw,values=values,
+  }
+end
+
+local function controllerSummary()
+  if not controller then
+    print("Adv controller:   MISSING")
     print("  It must touch the center computer or share a wired modem network.")
     return
   end
-  local p,yaw,err,target=readNavigationPose(false)
-  print("Advanced nav:     FOUND")
-  if p then print(string.format("Table XYZ:        %.2f %.2f %.2f",p.x,p.y,p.z)) end
-  if target then print(string.format("Reference XYZ:    %.2f %.2f %.2f",target.x,target.y,target.z)) end
-  if yaw then print(string.format("Derived heading:  %.2f degrees",yaw))
-  else print("Derived heading:  UNAVAILABLE - "..tostring(err)) end
+  local p,yaw,err,physics=readControllerPose()
+  print("Adv controller:   FOUND ("..tostring(controllerName)..")")
+  if not p then
+    print("Graph physics:    UNAVAILABLE - "..tostring(err))
+    print("  Check the shared graph and all required variable names.")
+    return
+  end
+  print("Graph physics:    READY")
+  print(string.format("Ship XYZ:         %.2f %.2f %.2f",p.x,p.y,p.z))
+  print(string.format("Mass:             %.2f",physics.mass))
+  print(string.format("Heading:          %.2f degrees (raw %.2f)",yaw,physics.rawYaw))
+  print(string.format("Velocity:         %.2f %.2f %.2f",velocity.x,velocity.y,velocity.z))
 end
 
 local function listPeripherals()
   discover()
-  navigationSummary()
+  controllerSummary()
   print("Wireless modem:  "..wirelessStatus)
   print("Corner relays:   "..relayCount.." / 4")
   local names={}
@@ -227,13 +248,6 @@ local function listPeripherals()
   table.sort(names)
   print("Thrusters ("..tostring(#names).."):")
   for _,n in ipairs(names) do print("  "..n.." ["..thrusters[n].kind.."]") end
-end
-
-local function hasPeripheralType(name,expected)
-  for _,kind in ipairs({peripheral.getType(name)}) do
-    if kind==expected then return true end
-  end
-  return false
 end
 
 -- Read-only inventory of everything CC:Tweaked can currently see through the
@@ -381,8 +395,8 @@ end
 local function setup()
   allStop()
   discover()
-  local p,yaw,navError=readNavigationPose(false)
-  if not p or not yaw then error("Navigation unavailable: "..tostring(navError),0) end
+  local p,yaw,controllerError,physics=readControllerPose()
+  if not p or not yaw then error("Controller physics unavailable: "..tostring(controllerError),0) end
   local names={}
   for n in pairs(thrusters) do names[#names+1]=n end
   table.sort(names)
@@ -396,6 +410,8 @@ local function setup()
   print("  2 left + 2 right edge thrusters -> X translation")
   print("  2 front + 2 back edge thrusters -> Z translation")
   print("  Differential edge thrust -> heading correction")
+  print(string.format("  Controller graph ready: mass %.2f at %.2f %.2f %.2f",
+    physics.mass,p.x,p.y,p.z))
   cfg.cruiseY=tonumber(ask("Cruise altitude",cfg.cruiseY)) or cfg.cruiseY
   cfg.hoverPower=tonumber(ask("Estimated hover throttle 0..1",cfg.hoverPower)) or cfg.hoverPower
   cfg.maxPower=tonumber(ask("Maximum initial throttle 0..1",cfg.maxPower)) or cfg.maxPower
@@ -478,14 +494,14 @@ end
 local function controlLoop()
   local failures=0
   while running do
-    local p,yaw,navError=readNavigationPose(true)
+    local p,yaw,controllerError=readControllerPose()
     if not p or not yaw then
       failures=failures+1
       allStop()
-      message="NAVIGATION LOST"
+      message="CONTROLLER PHYSICS LOST"
       if failures>=cfg.sensorFailureLimit then
         phase="aborted"; save()
-        error("Navigation lost; all thrusters stopped: "..tostring(navError),0)
+        error("Controller physics lost; all thrusters stopped: "..tostring(controllerError),0)
       end
       sleep(CONTROL_DT)
     else
@@ -548,9 +564,8 @@ local function runController()
   discover()
   bindConfigured()
   if relayCount~=4 then error("Expected 4 corner relays; found "..relayCount,0) end
-  if nav and type(nav.start)=="function" then safeCall(nav,"start") end
-  local p,yaw,navError=readNavigationPose(true)
-  if not p or not yaw then error("Navigation unavailable: "..tostring(navError),0) end
+  local p,yaw,controllerError=readControllerPose()
+  if not p or not yaw then error("Controller physics unavailable: "..tostring(controllerError),0) end
   print(string.format("Autopilot %s -> %.1f %.1f %.1f",VERSION,destination.x,destination.y,destination.z))
   print(string.format("Current %.1f %.1f %.1f | heading %.2f",p.x,p.y,p.z,yaw))
   print("Press X or Backspace for EMERGENCY STOP")
@@ -560,10 +575,9 @@ local function runController()
 end
 
 local function flyTo(x,y,z)
-  if not nav then error("Advanced Navigation Table not detected",0) end
-  if type(nav.start)=="function" then safeCall(nav,"start") end
-  local p,yaw,navError=readNavigationPose(false)
-  if not p or not yaw then error("Navigation unavailable: "..tostring(navError),0) end
+  if not controller then error("Advanced Contraption Controller not detected",0) end
+  local p,yaw,controllerError=readControllerPose()
+  if not p or not yaw then error("Controller physics unavailable: "..tostring(controllerError),0) end
   destination={x=x,y=y,z=z,startX=p.x,startZ=p.z}
   phase=math.abs(p.y-cfg.cruiseY)>cfg.altitudeTolerance and "climb" or "cruise"
   save()
@@ -571,13 +585,12 @@ local function flyTo(x,y,z)
 end
 
 local function calibrateZero()
-  if not nav then error("Advanced Navigation Table not detected",0) end
-  local oldOffset=cfg.navYawOffset or 0
-  local _,measured,navError=readNavigationPose(false)
-  if not measured then error("Navigation unavailable: "..tostring(navError),0) end
-  cfg.navYawOffset=wrapAngle(oldOffset-measured)
+  if not controller then error("Advanced Contraption Controller not detected",0) end
+  local _,_,controllerError,physics=readControllerPose()
+  if not physics then error("Controller physics unavailable: "..tostring(controllerError),0) end
+  cfg.controllerYawOffset=wrapAngle(-physics.rawYaw)
   save()
-  local _,corrected=readNavigationPose(false)
+  local _,corrected=readControllerPose()
   print(string.format("Current ship direction saved as 0 degrees (now %.3f).",corrected or 0))
 end
 
@@ -599,8 +612,8 @@ elseif cmd=="goto" then
 elseif cmd=="zero" then
   calibrateZero()
 elseif cmd=="hold" then
-  local p,yaw,navError=readNavigationPose(false)
-  if not p or not yaw then error("Navigation unavailable: "..tostring(navError),0) end
+  local p,yaw,controllerError=readControllerPose()
+  if not p or not yaw then error("Controller physics unavailable: "..tostring(controllerError),0) end
   destination={x=p.x,y=p.y,z=p.z,startX=p.x,startZ=p.z}
   phase="hold"
   save()
