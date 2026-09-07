@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | zero | hold | abort
 
-local VERSION="1.8.1"
+local VERSION="1.8.2"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -28,7 +28,8 @@ local DEFAULTS={
   gravity=11.0,
   yawForceKp=0.002,
   yawRateForceKd=0.004,
-  maxYawPower=0.12,
+  yawActuatorPolarity=-1,
+  yawPowerLimit=0.06,
   maxPower=0.80,
   sensorFailureLimit=5,
   telemetryProtocol="sable_hud_v1",
@@ -686,8 +687,9 @@ local function controlLoop()
     else
       failures=0
       local yawError=wrapAngle(cfg.targetYaw-yaw)
-      local yawCommand=clamp(yawError*cfg.yawForceKp-yawRate*cfg.yawRateForceKd,
-        -cfg.maxYawPower,cfg.maxYawPower)
+      local yawFeedback=yawError*cfg.yawForceKp-yawRate*cfg.yawRateForceKd
+      local yawCommand=clamp(yawFeedback*cfg.yawActuatorPolarity,
+        -cfg.yawPowerLimit,cfg.yawPowerLimit)
       local bx,bz,vertical=0,0,0
 
       if phase=="climb" then
