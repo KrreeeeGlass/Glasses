@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | zero | hold | abort
 
-local VERSION="1.7.0"
+local VERSION="1.7.1"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -162,6 +162,12 @@ end
 
 local function allStop()
   for _,t in pairs(thrusters) do pcall(t.device.setPowerNormalized,0) end
+end
+
+local function relayHeartbeat()
+  if rednet then
+    rednet.broadcast({type="heartbeat",controllerId=os.getComputerID()},REMOTE_PROTOCOL)
+  end
 end
 
 local GRAPH_VARIABLES={
@@ -494,6 +500,9 @@ end
 local function controlLoop()
   local failures=0
   while running do
+    -- Graph reads can take long enough for a relay's safe binding lease to
+    -- expire. Refresh ownership before reading; set packets can also reclaim it.
+    relayHeartbeat()
     local p,yaw,controllerError=readControllerPose()
     if not p or not yaw then
       failures=failures+1

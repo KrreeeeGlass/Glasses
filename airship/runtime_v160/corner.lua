@@ -1,12 +1,12 @@
 -- Wireless corner actuator for the Create Propulsion airship autopilot.
 local ROLE_MARKER="CORNER_RELAY_MAIN"
-local VERSION="1.7.0"
+local VERSION="1.7.1"
 local PROTOCOL="sable_airship_thrusters_v1"
 local WATCHDOG_SECONDS=0.60
 local RELEASE_SECONDS=3.0
 local UPDATE_INTERVAL=120
 local REPOSITORY="KrreeeeGlass/Glasses"
-local RELEASE_REF="airship-v1.7.0"
+local RELEASE_REF="airship-v1.7.1"
 local LAUNCHER_PATH="/airship.lua"
 local RUNTIME_PATH="/airship_corner_runtime_v160.lua"
 local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
@@ -126,14 +126,17 @@ while true do
   end
   local sender,msg=rednet.receive(PROTOCOL,0.10)
   if sender and type(msg)=="table" then
-    if msg.type=="discover" and
+    if (msg.type=="discover" or msg.type=="heartbeat") and msg.controllerId==sender and
         (not controllerId or controllerId==sender or os.clock()-lastCommand>RELEASE_SECONDS) then
       if controllerId~=sender then print("Bound to center #"..sender) end
       controllerId=sender
       lastCommand=os.clock()
-      rednet.broadcast(advertisement(),PROTOCOL)
-    elseif sender==controllerId and msg.type=="set" and msg.controllerId==controllerId and
+      if msg.type=="discover" then rednet.broadcast(advertisement(),PROTOCOL) end
+    elseif msg.type=="set" and msg.controllerId==sender and
+        (not controllerId or controllerId==sender or os.clock()-lastCommand>RELEASE_SECONDS) and
         msg.targetRelay==relayId and type(msg.name)=="string" then
+      if controllerId~=sender then print("Bound to center #"..sender.." by control packet") end
+      controllerId=sender
       local t=thrusters[msg.name]
       if t then
         local power=math.max(0,math.min(1,tonumber(msg.power) or 0))
