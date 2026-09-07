@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.10.0"
+local VERSION="1.11.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -27,15 +27,18 @@ local DEFAULTS={
   verticalAccelKp=1.0,
   maxVerticalAccel=3.0,
   gravity=11.0,
-  yawForceKp=0.002,
-  yawRateForceKd=0.004,
   yawActuatorPolarity=-1,
+  yawAccelPerPower=200,
   yawPowerLimit=0.06,
+  maxYawRate=10.0,
+  maxYawAccel=8.0,
+  yawApproachRateKp=0.55,
+  yawRateKp=2.0,
   yawDeadband=2.0,
-  yawRateDeadband=1.0,
+  yawRateDeadband=0.35,
   yawPauseAngle=7.5,
   yawAlignedAngle=2.0,
-  yawAlignedRate=1.5,
+  yawAlignedRate=0.50,
   yawStableSeconds=0.60,
   movingYawScale=0.45,
   safeHorizontalSpeed=4.0,
@@ -725,6 +728,25 @@ local function verticalCommand(p,targetY)
   return clamp(requiredForce/capacity,0,cfg.maxPower),errorY
 end
 
+local function yawCommandFor(yawError,aligned)
+  local absoluteError=math.abs(yawError)
+  local usableError=math.max(0,absoluteError-cfg.yawDeadband)
+  local brakingRate=math.sqrt(2*cfg.maxYawAccel*usableError)*0.75
+  local desiredRate=math.min(cfg.maxYawRate,
+    usableError*cfg.yawApproachRateKp,brakingRate)
+  if yawError<0 then desiredRate=-desiredRate end
+  if aligned then desiredRate=desiredRate*cfg.movingYawScale end
+
+  -- Track the planned angular velocity. When the measured yaw rate is too high
+  -- for the remaining angle, this becomes braking thrust before overshoot.
+  local desiredAccel=clamp((desiredRate-yawRate)*cfg.yawRateKp,
+    -cfg.maxYawAccel,cfg.maxYawAccel)
+  if usableError<=0 and math.abs(yawRate)<=cfg.yawRateDeadband then return 0,desiredRate end
+  local gain=math.max(20,tonumber(cfg.yawAccelPerPower) or 200)
+  local command=clamp(desiredAccel/gain,-cfg.yawPowerLimit,cfg.yawPowerLimit)
+  return command*cfg.yawActuatorPolarity,desiredRate
+end
+
 local function calibrationPulse(commandX,commandZ,commandYaw,vertical,seconds)
   local startPosition,startYaw,startError=readControllerPose()
   if not startPosition then error("Calibration sensor failure: "..tostring(startError),0) end
@@ -740,7 +762,7 @@ local function calibrationPulse(commandX,commandZ,commandYaw,vertical,seconds)
   local endPosition,endYaw,endError=readControllerPose()
   if not endPosition then error("Calibration sensor failure: "..tostring(endError),0) end
   return {x=velocity.x-startVelocity.x,z=velocity.z-startVelocity.z},
-    wrapAngle(endYaw-startYaw),yawRate-startYawRate,startYaw
+    wrapAngle(endYaw-startYaw),yawRate-startYawRate,startYaw,startYawRate
 end
 
 local function calibrateActuators()
@@ -795,13 +817,19 @@ local function calibrateActuators()
 
     print("Testing logical +yaw...")
     local yawPulse=1/30
-    local _,yawDelta,yawRateDelta=calibrationPulse(0,0,yawPulse,vertical,0.50)
-    calibrationPulse(0,0,-yawPulse,vertical,0.50)
+    local yawSeconds=0.50
+    local _,yawDelta,yawRateDelta,_,yawStartRate=
+      calibrationPulse(0,0,yawPulse,vertical,yawSeconds)
+    calibrationPulse(0,0,-yawPulse,vertical,yawSeconds)
     local yawResponse=math.abs(yawDelta)>=0.03 and yawDelta or yawRateDelta
     if math.abs(yawResponse)<0.03 then
       error("Yaw response too small. Check horizontal thrusters and try again.",0)
     end
     cfg.yawActuatorPolarity=yawResponse>0 and 1 or -1
+    local rateGain=math.abs(yawRateDelta)/(yawPulse*yawSeconds)
+    local accelerationAngle=yawDelta-yawStartRate*yawSeconds
+    local angleGain=2*math.abs(accelerationAngle)/(yawPulse*yawSeconds*yawSeconds)
+    cfg.yawAccelPerPower=clamp(rateGain>=20 and rateGain or angleGain,20,5000)
     save()
     return {deltaX=deltaX,deltaZ=deltaZ,yawDelta=yawDelta,
       yawRateDelta=yawRateDelta}
@@ -812,6 +840,7 @@ local function calibrateActuators()
   print(string.format("Z response: %.3f %.3f",result.deltaZ.x,result.deltaZ.z))
   print(string.format("Yaw response: %.3f deg / %.3f deg/s | polarity %d",
     result.yawDelta,result.yawRateDelta,cfg.yawActuatorPolarity))
+  print(string.format("Yaw acceleration: %.1f deg/s2 per power",cfg.yawAccelPerPower))
   print(string.format("Control matrix: %.3f %.3f / %.3f %.3f",
     cfg.controlMatrix[1],cfg.controlMatrix[2],cfg.controlMatrix[3],cfg.controlMatrix[4]))
   print("Calibration saved. Thrusters are OFF; now run: airship hold")
@@ -905,14 +934,7 @@ local function controlLoop()
         end
       end
 
-      local yawCommand=0
-      if not headingAligned or math.abs(yawError)>cfg.yawDeadband or
-          math.abs(yawRate)>cfg.yawRateDeadband then
-        local yawFeedback=yawError*cfg.yawForceKp-yawRate*cfg.yawRateForceKd
-        if headingAligned then yawFeedback=yawFeedback*cfg.movingYawScale end
-        yawCommand=clamp(yawFeedback*cfg.yawActuatorPolarity,
-          -cfg.yawPowerLimit,cfg.yawPowerLimit)
-      end
+      local yawCommand,plannedYawRate=yawCommandFor(yawError,headingAligned)
       local bx,bz,vertical=0,0,0
 
       if phase=="climb" then
@@ -946,9 +968,11 @@ local function controlLoop()
       end
       if not headingAligned then
         bx,bz=0,0
-        message=string.format("ALIGNING HEADING %.1f deg",yawError)
+        message=string.format("ALIGNING %.1f deg | rate %.1f -> %.1f",
+          yawError,yawRate,plannedYawRate)
       elseif math.abs(yawError)>cfg.yawDeadband then
-        message=string.format("FLYING | gentle heading correction %.1f deg",yawError)
+        message=string.format("FLYING | yaw %.1f | rate %.1f -> %.1f",
+          yawError,yawRate,plannedYawRate)
       else
         message="HEADING LOCKED | translation active"
       end
