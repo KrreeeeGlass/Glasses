@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.11.1"
+local VERSION="1.12.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -790,7 +790,7 @@ local function yawCommandFor(yawError,aligned)
   return command*cfg.yawActuatorPolarity,desiredRate
 end
 
-local function calibrationPulse(commandX,commandZ,commandYaw,vertical,seconds)
+local function calibrationPulse(commandX,commandZ,commandYaw,targetY,seconds)
   local startPosition,startYaw,startError=readControllerPose()
   if not startPosition then error("Calibration sensor failure: "..tostring(startError),0) end
   local startVelocity={x=velocity.x,z=velocity.z}
@@ -798,14 +798,39 @@ local function calibrationPulse(commandX,commandZ,commandYaw,vertical,seconds)
   local frames=math.max(1,math.floor(seconds/CONTROL_DT+0.5))
   for _=1,frames do
     relayHeartbeat()
+    local current,_,sensorError=readControllerPose()
+    if not current then error("Calibration sensor failure: "..tostring(sensorError),0) end
+    local vertical=verticalCommand(current,targetY)
     setOutputs(commandX,vertical,commandZ,commandYaw)
     sleep(CONTROL_DT)
   end
-  setOutputs(0,vertical,0,0)
   local endPosition,endYaw,endError=readControllerPose()
   if not endPosition then error("Calibration sensor failure: "..tostring(endError),0) end
+  local vertical=verticalCommand(endPosition,targetY)
+  setOutputs(0,vertical,0,0)
   return {x=velocity.x-startVelocity.x,z=velocity.z-startVelocity.z},
     wrapAngle(endYaw-startYaw),yawRate-startYawRate,startYaw,startYawRate
+end
+
+local function reachCalibrationAltitude(targetY,label)
+  print(label..string.format(" %.2f",targetY))
+  local deadline=os.clock()+20
+  local stableFrames=0
+  while os.clock()<deadline do
+    relayHeartbeat()
+    local p,_,sensorError=readControllerPose()
+    if not p then error("Calibration sensor failure: "..tostring(sensorError),0) end
+    local vertical,errorY=verticalCommand(p,targetY)
+    setOutputs(0,vertical,0,0)
+    if math.abs(errorY)<=0.35 and math.abs(velocity.y)<=0.35 then
+      stableFrames=stableFrames+1
+      if stableFrames>=5 then return end
+    else
+      stableFrames=0
+    end
+    sleep(CONTROL_DT)
+  end
+  error("Could not reach calibration altitude. Check lift energy, exhaust, mass and thrust.",0)
 end
 
 local function calibrateActuators()
@@ -816,28 +841,31 @@ local function calibrateActuators()
   local p,_,controllerError=readControllerPose()
   if not p then error("Controller physics unavailable: "..tostring(controllerError),0) end
   print("ACTUATOR CALIBRATION v"..VERSION)
-  print("Short low-power X, Z and yaw pulses will move the ship.")
-  print("Use a clear area at low altitude; gyro must be active.")
+  print("The ship will rise 2.5 blocks, then run X, Z and yaw pulses.")
+  print("Use a clear area with overhead room; gyro must be active.")
   if tostring(ask("Type CALIBRATE to begin","")):upper()~="CALIBRATE" then
     error("Calibration cancelled",0)
   end
 
   local liftCapacity=totalLiftCapacity()
   if liftCapacity<=0 then error("No lift capacity available",0) end
-  local vertical=clamp(currentMass*cfg.gravity/liftCapacity,0,cfg.maxPower)
+  local startY=p.y
+  local calibrationY=startY+2.5
   -- Exact redstone-step powers keep each required pair synchronized and make
   -- calibration measurements immune to sub-step temporal dithering.
   local pulsePower=1/15
   local pulseSeconds=0.40
   local ok,result=xpcall(function()
+    reachCalibrationAltitude(calibrationY,"Taking off to")
+
     print("Testing logical +X...")
-    local deltaX,_,_,headingX=calibrationPulse(pulsePower,0,0,vertical,pulseSeconds)
-    calibrationPulse(-pulsePower,0,0,vertical,pulseSeconds)
+    local deltaX,_,_,headingX=calibrationPulse(pulsePower,0,0,calibrationY,pulseSeconds)
+    calibrationPulse(-pulsePower,0,0,calibrationY,pulseSeconds)
     sleep(0.25)
 
     print("Testing logical +Z...")
-    local deltaZ,_,_,headingZ=calibrationPulse(0,pulsePower,0,vertical,pulseSeconds)
-    calibrationPulse(0,-pulsePower,0,vertical,pulseSeconds)
+    local deltaZ,_,_,headingZ=calibrationPulse(0,pulsePower,0,calibrationY,pulseSeconds)
+    calibrationPulse(0,-pulsePower,0,calibrationY,pulseSeconds)
     sleep(0.25)
 
     local bodyXX,bodyXZ=worldToBody(deltaX.x,deltaX.z,headingX)
@@ -862,8 +890,8 @@ local function calibrateActuators()
     local yawPulse=1/30
     local yawSeconds=0.60
     local _,yawDelta,yawRateDelta,_,yawStartRate=
-      calibrationPulse(0,0,yawPulse,vertical,yawSeconds)
-    calibrationPulse(0,0,-yawPulse,vertical,yawSeconds)
+      calibrationPulse(0,0,yawPulse,calibrationY,yawSeconds)
+    calibrationPulse(0,0,-yawPulse,calibrationY,yawSeconds)
     local yawResponse=math.abs(yawDelta)>=0.03 and yawDelta or yawRateDelta
     if math.abs(yawResponse)<0.03 then
       error("Yaw response too small. Check horizontal thrusters and try again.",0)
@@ -873,6 +901,7 @@ local function calibrateActuators()
     local accelerationAngle=yawDelta-yawStartRate*yawSeconds
     local angleGain=2*math.abs(accelerationAngle)/(yawPulse*yawSeconds*yawSeconds)
     cfg.yawAccelPerPower=clamp(rateGain>=20 and rateGain or angleGain,20,5000)
+    reachCalibrationAltitude(startY,"Returning to")
     save()
     return {deltaX=deltaX,deltaZ=deltaZ,yawDelta=yawDelta,
       yawRateDelta=yawRateDelta}

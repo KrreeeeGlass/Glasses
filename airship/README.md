@@ -57,7 +57,7 @@ airship status
 
 `airship controller` performs a read-only probe of the Advanced Contraption Controller. It lists every exposed ComputerCraft method, safely reads its status and graph variables, and saves the complete report to `/airship_controller_probe.txt`.
 
-`airship calibrate` performs short X, Z, and yaw pulses at exact Create Propulsion redstone steps, measures the Diagram response, and saves the real actuator-axis matrix and yaw polarity. The minimum-thrust allocator uses only the two required horizontal thrusters for each pure test; the lift thrusters continue holding altitude. Run it once after building or rotating the thruster/computer layout, in a clear low-altitude area with the gyro enabled.
+`airship calibrate` first rises 2.5 blocks clear of ground friction, performs short X, Z, and yaw pulses, and then returns to its starting height. Throughout takeoff and testing, it continuously combines live Diagram mass, measured lift-thruster force, vertical position, and vertical velocity: mass times gravity supplies neutral 0G/hover force, with controlled acceleration added or removed to change altitude. It saves the real actuator-axis matrix, yaw polarity, and yaw acceleration response. Run it once after building or rotating the thruster/computer layout, in a clear area with overhead room and the gyro enabled.
 
 `airship zero` records the current quaternion direction as heading 0. Run it while the ship is pointed in the exact direction you want it to preserve. No navigation table, lodestone compass, CC GPS constellation, or gimbal sensor is required.
 
