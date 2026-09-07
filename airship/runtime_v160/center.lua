@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.9.0"
+local VERSION="1.9.1"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -495,6 +495,95 @@ local function normalizedAxisForce(acceleration,field)
   return clamp(currentMass*acceleration/capacity,-cfg.maxPower,cfg.maxPower)
 end
 
+local function solveSmallSystem(matrix,vector,size)
+  local augmented={}
+  for row=1,size do
+    augmented[row]={}
+    for column=1,size do augmented[row][column]=matrix[row][column] end
+    augmented[row][size+1]=vector[row]
+  end
+  for column=1,size do
+    local pivot=column
+    for row=column+1,size do
+      if math.abs(augmented[row][column])>math.abs(augmented[pivot][column]) then
+        pivot=row
+      end
+    end
+    if math.abs(augmented[pivot][column])<0.000000001 then return nil end
+    augmented[column],augmented[pivot]=augmented[pivot],augmented[column]
+    local divisor=augmented[column][column]
+    for entry=column,size+1 do augmented[column][entry]=augmented[column][entry]/divisor end
+    for row=1,size do
+      if row~=column then
+        local factor=augmented[row][column]
+        for entry=column,size+1 do
+          augmented[row][entry]=augmented[row][entry]-factor*augmented[column][entry]
+        end
+      end
+    end
+  end
+  local answer={}
+  for row=1,size do answer[row]=augmented[row][size+1] end
+  return answer
+end
+
+-- Find the exact nonnegative solution using the least total thrust. With three
+-- controlled axes, an unsaturated minimum has at most three active thrusters.
+-- This prevents the old common-offset solution from firing unrelated opposing
+-- thrusters during a pure translation or yaw command.
+local function minimumThrustAllocation(horizontal,targetX,targetZ,targetYaw)
+  local target={targetX,targetZ,targetYaw}
+  local targetSize=targetX*targetX+targetZ*targetZ+targetYaw*targetYaw
+  if targetSize<0.000000000001 then return {} end
+  local best,bestCost
+
+  local function consider(indices)
+    local size=#indices
+    local gram,rhs={},{}
+    for row=1,size do
+      gram[row]={}
+      local a=horizontal[indices[row]]
+      local av={a.fx,a.fz,a.moment}
+      rhs[row]=av[1]*target[1]+av[2]*target[2]+av[3]*target[3]
+      for column=1,size do
+        local b=horizontal[indices[column]]
+        gram[row][column]=av[1]*b.fx+av[2]*b.fz+av[3]*b.moment
+      end
+    end
+    local powers=solveSmallSystem(gram,rhs,size)
+    if not powers then return end
+    local actualX,actualZ,actualYaw,cost=0,0,0,0
+    for entry=1,size do
+      local power=powers[entry]
+      if power<-0.0000001 or power>cfg.maxPower+0.0000001 then return end
+      power=clamp(power,0,cfg.maxPower)
+      local actuator=horizontal[indices[entry]]
+      actualX=actualX+actuator.fx*power
+      actualZ=actualZ+actuator.fz*power
+      actualYaw=actualYaw+actuator.moment*power
+      cost=cost+power
+      powers[entry]=power
+    end
+    local residual=(actualX-targetX)^2+(actualZ-targetZ)^2+(actualYaw-targetYaw)^2
+    if residual>0.00000001*(1+targetSize) then return end
+    if not bestCost or cost<bestCost-0.0000001 then
+      bestCost=cost
+      best={}
+      for entry=1,size do best[horizontal[indices[entry]].index]=powers[entry] end
+    end
+  end
+
+  local count=#horizontal
+  for first=1,count do
+    consider({first})
+    for second=first+1,count do
+      consider({first,second})
+      for third=second+1,count do consider({first,second,third}) end
+    end
+  end
+  return best
+end
+
 local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
   local raw={}
   local horizontal={}
@@ -513,18 +602,19 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
   local targetX=bodyX*2
   local targetZ=bodyZ*2
   local targetYaw=yawTorque*4
-  local minimum,maximum=0,0
-  for _,a in ipairs(horizontal) do
-    -- The symmetric layout makes the X, Z and yaw rows orthogonal. This is its
-    -- minimum-norm inverse before enforcing one-way (nonnegative) thrust.
-    a.p=a.fx*targetX/4+a.fz*targetZ/4+a.moment*targetYaw/8
-    minimum=math.min(minimum,a.p)
+  local allocation=minimumThrustAllocation(horizontal,targetX,targetZ,targetYaw)
+  if not allocation then
+    -- Preserve direction when a combined request exceeds an actuator limit.
+    local low,high=0,1
+    for _=1,14 do
+      local middle=(low+high)/2
+      local candidate=minimumThrustAllocation(horizontal,targetX*middle,
+        targetZ*middle,targetYaw*middle)
+      if candidate then low,allocation=middle,candidate else high=middle end
+    end
   end
-  local shift=-minimum -- common thrust is a zero-force/zero-torque null vector
-  for _,a in ipairs(horizontal) do maximum=math.max(maximum,a.p+shift) end
-  local scale=maximum>cfg.maxPower and cfg.maxPower/maximum or 1
-  for _,a in ipairs(horizontal) do
-    raw[a.index]=(a.p+shift)*scale
+  for index,power in pairs(allocation or {}) do
+    raw[index]=power
   end
 
   -- Create Propulsion quantizes normalized power to 15 redstone steps. Convert
@@ -657,8 +747,10 @@ local function calibrateActuators()
   local liftCapacity=totalLiftCapacity()
   if liftCapacity<=0 then error("No lift capacity available",0) end
   local vertical=clamp(currentMass*cfg.gravity/liftCapacity,0,cfg.maxPower)
-  local pulsePower=0.04
-  local pulseSeconds=0.50
+  -- Exact redstone-step powers keep each required pair synchronized and make
+  -- calibration measurements immune to sub-step temporal dithering.
+  local pulsePower=1/15
+  local pulseSeconds=0.40
   local ok,result=xpcall(function()
     print("Testing logical +X...")
     local deltaX,_,_,headingX=calibrationPulse(pulsePower,0,0,vertical,pulseSeconds)
@@ -689,8 +781,9 @@ local function calibrateActuators()
     }
 
     print("Testing logical +yaw...")
-    local _,yawDelta,yawRateDelta=calibrationPulse(0,0,0.04,vertical,0.60)
-    calibrationPulse(0,0,-0.04,vertical,0.60)
+    local yawPulse=1/30
+    local _,yawDelta,yawRateDelta=calibrationPulse(0,0,yawPulse,vertical,0.50)
+    calibrationPulse(0,0,-yawPulse,vertical,0.50)
     local yawResponse=math.abs(yawDelta)>=0.03 and yawDelta or yawRateDelta
     if math.abs(yawResponse)<0.03 then
       error("Yaw response too small. Check horizontal thrusters and try again.",0)

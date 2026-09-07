@@ -57,13 +57,13 @@ airship status
 
 `airship controller` performs a read-only probe of the Advanced Contraption Controller. It lists every exposed ComputerCraft method, safely reads its status and graph variables, and saves the complete report to `/airship_controller_probe.txt`.
 
-`airship calibrate` performs short low-power X, Z, and yaw pulses, measures the Diagram response, and saves the real actuator-axis matrix and yaw polarity. Run it once after building or rotating the thruster/computer layout, in a clear low-altitude area with the gyro enabled.
+`airship calibrate` performs short X, Z, and yaw pulses at exact Create Propulsion redstone steps, measures the Diagram response, and saves the real actuator-axis matrix and yaw polarity. The minimum-thrust allocator uses only the two required horizontal thrusters for each pure test; the lift thrusters continue holding altitude. Run it once after building or rotating the thruster/computer layout, in a clear low-altitude area with the gyro enabled.
 
 `airship zero` records the current quaternion direction as heading 0. Run it while the ship is pointed in the exact direction you want it to preserve. No navigation table, lodestone compass, CC GPS constellation, or gimbal sensor is required.
 
 `airship setup` automatically maps the supported square layout: four lift thrusters below the corners plus paired horizontal thrusters on the four outer edges. It derives corner position and force direction from the stable relay/thruster names, so the twelve thrusters no longer require individual direction entry.
 
-Lift is mass-aware: the center combines the Diagram's live mass with Sable gravity and the corner relays' measured Create Propulsion thrust. Because `setPowerNormalized` is internally quantized to fifteen redstone levels, fractional lift is distributed and rotated across the four corners over time instead of switching all four thrusters between coarse levels together. Horizontal motion and heading corrections are force-limited, use the same sub-step dithering, and share a constrained allocator that prevents yaw correction from creating unwanted diagonal translation.
+Lift is mass-aware: the center combines the Diagram's live mass with Sable gravity and the corner relays' measured Create Propulsion thrust. Because `setPowerNormalized` is internally quantized to fifteen redstone levels, fractional lift is distributed and rotated across the four corners over time instead of switching all four thrusters between coarse levels together. Horizontal motion and heading corrections are force-limited, use the same sub-step dithering, and share an exact minimum-thrust allocator. It chooses at most three horizontal thrusters for a combined force/turn request and normally exactly two for a pure X, Z, or yaw command, eliminating the old cancellation thrust that could create drift.
 
 Updates are automatic. The center refreshes its launcher and runtime at every boot and before every `airship` command. Corner relays also check GitHub while idle and install updates automatically; they never update or reboot while a center is actively commanding thrust.
 
