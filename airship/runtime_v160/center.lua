@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.9.1"
+local VERSION="1.10.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -31,6 +31,16 @@ local DEFAULTS={
   yawRateForceKd=0.004,
   yawActuatorPolarity=-1,
   yawPowerLimit=0.06,
+  yawDeadband=2.0,
+  yawRateDeadband=1.0,
+  yawPauseAngle=7.5,
+  yawAlignedAngle=2.0,
+  yawAlignedRate=1.5,
+  yawStableSeconds=0.60,
+  movingYawScale=0.45,
+  safeHorizontalSpeed=4.0,
+  safeHorizontalAccel=0.80,
+  safePositionKp=0.14,
   maxPower=0.80,
   sensorFailureLimit=5,
   telemetryProtocol="sable_hud_v1",
@@ -684,12 +694,15 @@ local function horizontalCommand(p,target,yaw)
   local ex,ez=target.x-p.x,target.z-p.z
   local distance=math.sqrt(ex*ex+ez*ez)
   if distance<0.001 then return 0,0,distance end
-  local speedLimit=math.min(cfg.maxHorizontalSpeed,distance*cfg.positionKp)
+  local accelLimit=math.min(cfg.maxHorizontalAccel,cfg.safeHorizontalAccel)
+  local speedLimit=math.min(cfg.maxHorizontalSpeed,cfg.safeHorizontalSpeed,
+    distance*math.min(cfg.positionKp,cfg.safePositionKp),
+    math.sqrt(math.max(0,2*accelLimit*distance))*0.70)
   local desiredX,desiredZ=ex/distance*speedLimit,ez/distance*speedLimit
   local accelX=clamp((desiredX-velocity.x)*cfg.horizontalAccelKp,
-    -cfg.maxHorizontalAccel,cfg.maxHorizontalAccel)
+    -accelLimit,accelLimit)
   local accelZ=clamp((desiredZ-velocity.z)*cfg.horizontalAccelKp,
-    -cfg.maxHorizontalAccel,cfg.maxHorizontalAccel)
+    -accelLimit,accelLimit)
   local bodyAccelX,bodyAccelZ=worldToBody(accelX,accelZ,yaw)
   local desiredX=normalizedAxisForce(bodyAccelX,"fx")
   local desiredZ=normalizedAxisForce(bodyAccelZ,"fz")
@@ -858,6 +871,9 @@ end
 
 local function controlLoop()
   local failures=0
+  local headingAligned=false
+  local headingStableFrames=0
+  local requiredStableFrames=math.max(1,math.floor(cfg.yawStableSeconds/CONTROL_DT+0.5))
   while running do
     -- Graph reads can take long enough for a relay's safe binding lease to
     -- expire. Refresh ownership before reading; set packets can also reclaim it.
@@ -875,9 +891,28 @@ local function controlLoop()
     else
       failures=0
       local yawError=wrapAngle(cfg.targetYaw-yaw)
-      local yawFeedback=yawError*cfg.yawForceKp-yawRate*cfg.yawRateForceKd
-      local yawCommand=clamp(yawFeedback*cfg.yawActuatorPolarity,
-        -cfg.yawPowerLimit,cfg.yawPowerLimit)
+      if headingAligned and math.abs(yawError)>=cfg.yawPauseAngle then
+        headingAligned=false
+        headingStableFrames=0
+      end
+      if not headingAligned then
+        if math.abs(yawError)<=cfg.yawAlignedAngle and
+            math.abs(yawRate)<=cfg.yawAlignedRate then
+          headingStableFrames=headingStableFrames+1
+          if headingStableFrames>=requiredStableFrames then headingAligned=true end
+        else
+          headingStableFrames=0
+        end
+      end
+
+      local yawCommand=0
+      if not headingAligned or math.abs(yawError)>cfg.yawDeadband or
+          math.abs(yawRate)>cfg.yawRateDeadband then
+        local yawFeedback=yawError*cfg.yawForceKp-yawRate*cfg.yawRateForceKd
+        if headingAligned then yawFeedback=yawFeedback*cfg.movingYawScale end
+        yawCommand=clamp(yawFeedback*cfg.yawActuatorPolarity,
+          -cfg.yawPowerLimit,cfg.yawPowerLimit)
+      end
       local bx,bz,vertical=0,0,0
 
       if phase=="climb" then
@@ -909,8 +944,15 @@ local function controlLoop()
         allStop()
         break
       end
+      if not headingAligned then
+        bx,bz=0,0
+        message=string.format("ALIGNING HEADING %.1f deg",yawError)
+      elseif math.abs(yawError)>cfg.yawDeadband then
+        message=string.format("FLYING | gentle heading correction %.1f deg",yawError)
+      else
+        message="HEADING LOCKED | translation active"
+      end
       setOutputs(bx,vertical,bz,yawCommand)
-      message=nil
       sendTelemetry(p,yaw)
       sleep(CONTROL_DT)
     end

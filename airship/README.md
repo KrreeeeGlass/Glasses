@@ -65,6 +65,8 @@ airship status
 
 Lift is mass-aware: the center combines the Diagram's live mass with Sable gravity and the corner relays' measured Create Propulsion thrust. Because `setPowerNormalized` is internally quantized to fifteen redstone levels, fractional lift is distributed and rotated across the four corners over time instead of switching all four thrusters between coarse levels together. Horizontal motion and heading corrections are force-limited, use the same sub-step dithering, and share an exact minimum-thrust allocator. It chooses at most three horizontal thrusters for a combined force/turn request and normally exactly two for a pure X, Z, or yaw command, eliminating the old cancellation thrust that could create drift.
 
+Before translating, the autopilot aligns to the configured heading and waits for both heading error and yaw rate to settle. Small heading errors are ignored while flying, moderate errors receive a gentle correction, and horizontal movement pauses if the error reaches 7.5 degrees. Horizontal speed and acceleration also use conservative safety caps plus a stopping-distance limit to reduce overshoot.
+
 Updates are automatic. The center refreshes its launcher and runtime at every boot and before every `airship` command. Corner relays also check GitHub while idle and install updates automatically; they never update or reboot while a center is actively commanding thrust.
 
 Every published airship change increments the runtime version. The launcher prints the downloaded and running version on the center, and each corner prints its running version at startup so all five computers can be checked at a glance.
