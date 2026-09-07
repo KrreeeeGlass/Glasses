@@ -5,9 +5,10 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.13.0"
+local VERSION="1.14.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
+local ACTUATOR_DT=0.05
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
 
 local DEFAULTS={
@@ -66,6 +67,7 @@ local thrusterTelemetry={}
 local liftLevelCarry=0
 local liftRotation=0
 local powerLevelCarry={}
+local controlDemand=nil
 
 local function clamp(v,lo,hi) return math.max(lo,math.min(hi,v)) end
 local function wrapAngle(a) return (a+180)%360-180 end
@@ -1027,6 +1029,21 @@ local function relayTelemetryLoop()
   end
 end
 
+local function actuatorLoop()
+  local wasActive=false
+  while running do
+    local demand=controlDemand
+    if demand then
+      setOutputs(demand.x,demand.vertical,demand.z,demand.yaw)
+      wasActive=true
+    elseif wasActive then
+      allStop()
+      wasActive=false
+    end
+    sleep(ACTUATOR_DT)
+  end
+end
+
 local function controlLoop()
   local failures=0
   local headingAligned=false
@@ -1039,6 +1056,7 @@ local function controlLoop()
     local p,yaw,controllerError=readControllerPose()
     if not p or not yaw then
       failures=failures+1
+      controlDemand=nil
       allStop()
       message="CONTROLLER PHYSICS LOST"
       if failures>=cfg.sensorFailureLimit then
@@ -1093,6 +1111,7 @@ local function controlLoop()
         vertical=verticalCommand(p,target.y)
         bx,bz=horizontalCommand(p,target,yaw)
       else
+        controlDemand=nil
         allStop()
         break
       end
@@ -1106,7 +1125,9 @@ local function controlLoop()
       else
         message="HEADING LOCKED | translation active"
       end
-      setOutputs(bx,vertical,bz,yawCommand)
+      -- Publish one complete demand atomically. The 20 Hz actuator loop turns
+      -- it into tick-sized PWM pulses independently of slower Diagram reads.
+      controlDemand={x=bx,vertical=vertical,z=bz,yaw=yawCommand}
       sendTelemetry(p,yaw)
       sleep(CONTROL_DT)
     end
@@ -1119,6 +1140,7 @@ local function commandLoop()
     if key==keys.backspace or key==keys.x then
       phase="aborted"
       running=false
+      controlDemand=nil
       allStop()
       save()
       print("\nEMERGENCY STOP")
@@ -1135,9 +1157,11 @@ local function runController()
   print(string.format("Autopilot %s -> %.1f %.1f %.1f",VERSION,destination.x,destination.y,destination.z))
   print(string.format("Current %.1f %.1f %.1f | heading %.2f",p.x,p.y,p.z,yaw))
   print("Press X or Backspace for EMERGENCY STOP")
+  controlDemand=nil
   local ok,err=xpcall(function()
-    parallel.waitForAny(controlLoop,commandLoop,relayTelemetryLoop)
+    parallel.waitForAny(controlLoop,commandLoop,relayTelemetryLoop,actuatorLoop)
   end,debug.traceback)
+  controlDemand=nil
   allStop()
   if not ok then phase="aborted"; save(); error(err,0) end
 end
