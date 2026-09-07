@@ -5,10 +5,9 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.14.0"
+local VERSION="1.15.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
-local ACTUATOR_DT=0.05
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
 
 local DEFAULTS={
@@ -32,7 +31,7 @@ local DEFAULTS={
   yawRatePolarity=1,
   yawAccelPerPower=200,
   yawPowerLimit=0.06,
-  minYawCommand=1/120,
+  thrusterResponseSeconds=0.50,
   maxYawRate=10.0,
   maxYawAccel=8.0,
   yawApproachRateKp=0.55,
@@ -66,8 +65,8 @@ local currentMass=1
 local thrusterTelemetry={}
 local liftLevelCarry=0
 local liftRotation=0
-local powerLevelCarry={}
-local controlDemand=nil
+local yawPairRotation=0
+local lastPureYawSign=0
 
 local function clamp(v,lo,hi) return math.max(lo,math.min(hi,v)) end
 local function wrapAngle(a) return (a+180)%360-180 end
@@ -678,28 +677,32 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
   end
 
 
-  -- Quantize pure yaw in two opposite, force-balanced pairs. Small corrections
-  -- alternate pairs for half-sized, twice-as-frequent impulses; larger commands
-  -- can activate both pairs while all four corners share the work over time.
+  -- Version 1.1.5 floors ComputerCraft throttle to 15 levels and applies a
+  -- ten-tick startup/fade envelope. Keep a chosen balanced pair continuously
+  -- active during a correction instead of PWM-resetting its spool-up.
   local pureYawLevels
   if pureYaw and allocation and yawPairs then
     local groupPower
     for _,power in pairs(allocation) do groupPower=power break end
-    local carry=(powerLevelCarry.__balancedYaw or 0)+(groupPower or 0)*30
-    local totalPairLevels=math.floor(carry+0.0000001)
-    powerLevelCarry.__balancedYaw=carry-totalPairLevels
     local maxLevel=math.floor(clamp(cfg.maxPower,0,1)*15+0.0000001)
+    local totalPairLevels=math.floor((groupPower or 0)*30+0.5)
+    totalPairLevels=math.max(1,totalPairLevels)
     totalPairLevels=clamp(totalPairLevels,0,maxLevel*2)
     local baseLevel=math.floor(totalPairLevels/2)
     local extras=totalPairLevels%2
-    local rotation=((powerLevelCarry.__balancedYawRotation or 0)%2)+1
-    powerLevelCarry.__balancedYawRotation=rotation
+    local yawSign=targetYaw>0 and 1 or -1
+    if yawSign~=lastPureYawSign then
+      yawPairRotation=(yawPairRotation%2)+1
+      lastPureYawSign=yawSign
+    end
     pureYawLevels={}
     for pairIndex,pair in ipairs(yawPairs) do
-      local relative=(pairIndex-rotation)%2
+      local relative=(pairIndex-yawPairRotation)%2
       local level=baseLevel+(relative<extras and 1 or 0)
       pureYawLevels[pair[1]],pureYawLevels[pair[2]]=level,level
     end
+  else
+    lastPureYawSign=0
   end
 
   -- Create Propulsion quantizes normalized power to 15 redstone steps. Convert
@@ -732,18 +735,14 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
     if not thruster then allStop(); error("Thruster disappeared: "..m.name,0) end
     local power=clamp(raw[i],0,cfg.maxPower)
     if (m.fy or 0)<=0 then
-      -- Dither sub-step horizontal/yaw commands instead of rounding them to
-      -- either zero or one permanently violent redstone step.
+      -- Hold discrete levels steadily so the installed 1.1.5 thruster can
+      -- finish its ten-tick spool rather than restarting on every PWM edge.
       if pureYawLevels and pureYawLevels[i]~=nil then
         power=pureYawLevels[i]/15
-        powerLevelCarry[m.name]=0
-      elseif power<=0 then
-        powerLevelCarry[m.name]=0
       else
-        local carry=(powerLevelCarry[m.name] or ((i-1)/#cfg.thrusters))+power*15
-        local level=math.floor(carry+0.0000001)
-        powerLevelCarry[m.name]=carry-level
         local maxLevel=math.floor(clamp(cfg.maxPower,0,1)*15+0.0000001)
+        local level=math.floor(power*15+0.5)
+        if power>0.0000001 and level==0 then level=1 end
         power=clamp(level,0,maxLevel)/15
       end
     end
@@ -773,9 +772,12 @@ local function horizontalCommand(p,target,yaw)
   local distance=math.sqrt(ex*ex+ez*ez)
   if distance<0.001 then return 0,0,distance end
   local accelLimit=math.min(cfg.maxHorizontalAccel,cfg.safeHorizontalAccel)
+  local response=clamp(tonumber(cfg.thrusterResponseSeconds) or 0.50,0,2)
+  local brakingSpeed=(math.sqrt((accelLimit*response)^2+
+    2*accelLimit*distance)-accelLimit*response)*0.70
   local speedLimit=math.min(cfg.maxHorizontalSpeed,cfg.safeHorizontalSpeed,
     distance*math.min(cfg.positionKp,cfg.safePositionKp),
-    math.sqrt(math.max(0,2*accelLimit*distance))*0.70)
+    brakingSpeed)
   local desiredX,desiredZ=ex/distance*speedLimit,ez/distance*speedLimit
   local accelX=clamp((desiredX-velocity.x)*cfg.horizontalAccelKp,
     -accelLimit,accelLimit)
@@ -806,7 +808,12 @@ end
 local function yawCommandFor(yawError,headingYawRate,aligned)
   local absoluteError=math.abs(yawError)
   local usableError=math.max(0,absoluteError-cfg.yawDeadband)
-  local brakingRate=math.sqrt(2*cfg.maxYawAccel*usableError)*0.75
+  local yawAccel=math.max(0.01,cfg.maxYawAccel)
+  local response=clamp(tonumber(cfg.thrusterResponseSeconds) or 0.50,0,2)
+  -- Maximum rate that can survive the response delay and then decelerate over
+  -- the remaining angle: distance = rate*delay + rate^2/(2*acceleration).
+  local brakingRate=(math.sqrt((yawAccel*response)^2+
+    2*yawAccel*usableError)-yawAccel*response)*0.70
   local desiredRate=math.min(cfg.maxYawRate,
     usableError*cfg.yawApproachRateKp,brakingRate)
   if yawError<0 then desiredRate=-desiredRate end
@@ -821,10 +828,6 @@ local function yawCommandFor(yawError,headingYawRate,aligned)
   end
   local gain=math.max(20,tonumber(cfg.yawAccelPerPower) or 200)
   local command=clamp(desiredAccel/gain,-cfg.yawPowerLimit,cfg.yawPowerLimit)
-  local minimum=clamp(tonumber(cfg.minYawCommand) or 1/120,0,cfg.yawPowerLimit)
-  if math.abs(command)>0.0000001 and math.abs(command)<minimum then
-    command=command>0 and minimum or -minimum
-  end
   return command*cfg.yawActuatorPolarity,desiredRate
 end
 
@@ -954,7 +957,9 @@ local function calibrateActuators()
     else
       cfg.yawRatePolarity=1
     end
-    local rateGain=math.abs(yawRateDelta)/(yawPulse*yawSeconds)
+    local effectiveSeconds=math.max(CONTROL_DT,
+      yawSeconds-(tonumber(cfg.thrusterResponseSeconds) or 0.50)/2)
+    local rateGain=math.abs(yawRateDelta)/(yawPulse*effectiveSeconds)
     local accelerationAngle=yawDelta-yawStartRate*cfg.yawRatePolarity*yawSeconds
     local angleGain=2*math.abs(accelerationAngle)/(yawPulse*yawSeconds*yawSeconds)
     cfg.yawAccelPerPower=clamp(rateGain>=20 and rateGain or angleGain,20,5000)
@@ -1029,21 +1034,6 @@ local function relayTelemetryLoop()
   end
 end
 
-local function actuatorLoop()
-  local wasActive=false
-  while running do
-    local demand=controlDemand
-    if demand then
-      setOutputs(demand.x,demand.vertical,demand.z,demand.yaw)
-      wasActive=true
-    elseif wasActive then
-      allStop()
-      wasActive=false
-    end
-    sleep(ACTUATOR_DT)
-  end
-end
-
 local function controlLoop()
   local failures=0
   local headingAligned=false
@@ -1056,7 +1046,6 @@ local function controlLoop()
     local p,yaw,controllerError=readControllerPose()
     if not p or not yaw then
       failures=failures+1
-      controlDemand=nil
       allStop()
       message="CONTROLLER PHYSICS LOST"
       if failures>=cfg.sensorFailureLimit then
@@ -1111,7 +1100,6 @@ local function controlLoop()
         vertical=verticalCommand(p,target.y)
         bx,bz=horizontalCommand(p,target,yaw)
       else
-        controlDemand=nil
         allStop()
         break
       end
@@ -1125,9 +1113,7 @@ local function controlLoop()
       else
         message="HEADING LOCKED | translation active"
       end
-      -- Publish one complete demand atomically. The 20 Hz actuator loop turns
-      -- it into tick-sized PWM pulses independently of slower Diagram reads.
-      controlDemand={x=bx,vertical=vertical,z=bz,yaw=yawCommand}
+      setOutputs(bx,vertical,bz,yawCommand)
       sendTelemetry(p,yaw)
       sleep(CONTROL_DT)
     end
@@ -1140,7 +1126,6 @@ local function commandLoop()
     if key==keys.backspace or key==keys.x then
       phase="aborted"
       running=false
-      controlDemand=nil
       allStop()
       save()
       print("\nEMERGENCY STOP")
@@ -1157,11 +1142,9 @@ local function runController()
   print(string.format("Autopilot %s -> %.1f %.1f %.1f",VERSION,destination.x,destination.y,destination.z))
   print(string.format("Current %.1f %.1f %.1f | heading %.2f",p.x,p.y,p.z,yaw))
   print("Press X or Backspace for EMERGENCY STOP")
-  controlDemand=nil
   local ok,err=xpcall(function()
-    parallel.waitForAny(controlLoop,commandLoop,relayTelemetryLoop,actuatorLoop)
+    parallel.waitForAny(controlLoop,commandLoop,relayTelemetryLoop)
   end,debug.traceback)
-  controlDemand=nil
   allStop()
   if not ok then phase="aborted"; save(); error(err,0) end
 end

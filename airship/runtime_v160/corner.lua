@@ -1,12 +1,12 @@
 -- Wireless corner actuator for the Create Propulsion airship autopilot.
 local ROLE_MARKER="CORNER_RELAY_MAIN"
-local VERSION="1.14.0"
+local VERSION="1.15.0"
 local PROTOCOL="sable_airship_thrusters_v1"
 local WATCHDOG_SECONDS=1.50
 local RELEASE_SECONDS=3.0
 local UPDATE_INTERVAL=120
 local REPOSITORY="KrreeeeGlass/Glasses"
-local RELEASE_REF="airship-v1.14.0"
+local RELEASE_REF="airship-v1.15.0"
 local LAUNCHER_PATH="/airship.lua"
 local RUNTIME_PATH="/airship_corner_runtime_v160.lua"
 local THRUSTER_TYPES={thruster=true,solid_fuel_thruster=true,ion_thruster=true,
