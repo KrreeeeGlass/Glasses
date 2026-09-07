@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.12.0"
+local VERSION="1.12.1"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -812,17 +812,21 @@ local function calibrationPulse(commandX,commandZ,commandYaw,targetY,seconds)
     wrapAngle(endYaw-startYaw),yawRate-startYawRate,startYaw,startYawRate
 end
 
-local function reachCalibrationAltitude(targetY,label)
+local function reachCalibrationAltitude(targetY,label,tolerance,speedTolerance,timeout)
   print(label..string.format(" %.2f",targetY))
-  local deadline=os.clock()+20
+  tolerance=tolerance or 0.35
+  speedTolerance=speedTolerance or 0.35
+  local deadline=os.clock()+(timeout or 20)
   local stableFrames=0
+  local lastY,lastVelocity
   while os.clock()<deadline do
     relayHeartbeat()
     local p,_,sensorError=readControllerPose()
     if not p then error("Calibration sensor failure: "..tostring(sensorError),0) end
+    lastY,lastVelocity=p.y,velocity.y
     local vertical,errorY=verticalCommand(p,targetY)
     setOutputs(0,vertical,0,0)
-    if math.abs(errorY)<=0.35 and math.abs(velocity.y)<=0.35 then
+    if math.abs(errorY)<=tolerance and math.abs(velocity.y)<=speedTolerance then
       stableFrames=stableFrames+1
       if stableFrames>=5 then return end
     else
@@ -830,7 +834,9 @@ local function reachCalibrationAltitude(targetY,label)
     end
     sleep(CONTROL_DT)
   end
-  error("Could not reach calibration altitude. Check lift energy, exhaust, mass and thrust.",0)
+  error(string.format(
+    "Could not reach calibration altitude %.2f (Y %.2f, velocity %.2f). Check lift energy, exhaust, mass and thrust.",
+    targetY,lastY or -999,lastVelocity or -999),0)
 end
 
 local function calibrateActuators()
@@ -901,8 +907,10 @@ local function calibrateActuators()
     local accelerationAngle=yawDelta-yawStartRate*yawSeconds
     local angleGain=2*math.abs(accelerationAngle)/(yawPulse*yawSeconds*yawSeconds)
     cfg.yawAccelPerPower=clamp(rateGain>=20 and rateGain or angleGain,20,5000)
-    reachCalibrationAltitude(startY,"Returning to")
     save()
+    -- Land slightly above the recorded resting COM height. Requiring the exact
+    -- grounded value made harmless redstone-step bobbing fail calibration.
+    reachCalibrationAltitude(startY+0.40,"Returning to",0.60,0.75,30)
     return {deltaX=deltaX,deltaZ=deltaZ,yawDelta=yawDelta,
       yawRateDelta=yawRateDelta}
   end,debug.traceback)
