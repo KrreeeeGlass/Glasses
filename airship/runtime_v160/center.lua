@@ -4,7 +4,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | zero | hold | abort
 
-local VERSION="1.6.7"
+local VERSION="1.6.8"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -258,10 +258,34 @@ local function probeContraptionController()
     print(line)
     lines[#lines+1]=line
   end
-  local function encoded(value)
-    if type(value)=="table" then return textutils.serialize(value) end
-    if value==nil then return "nil" end
-    return tostring(value)
+  local function encoded(value,seen,depth)
+    local kind=type(value)
+    if kind=="nil" then return "nil" end
+    if kind=="string" then return string.format("%q",value) end
+    if kind~="table" then return tostring(value) end
+    seen=seen or {}
+    depth=depth or 0
+    if seen[value] then return "<repeated table>" end
+    if depth>=8 then return "{<depth limit>}" end
+    seen[value]=true
+    local entries={}
+    local count=0
+    for key,item in pairs(value) do
+      count=count+1
+      if count>200 then
+        entries[#entries+1]="<entry limit>"
+        break
+      end
+      entries[#entries+1]="["..encoded(key,seen,depth+1).."]="..
+        encoded(item,seen,depth+1)
+    end
+    seen[value]=nil
+    table.sort(entries)
+    return "{"..table.concat(entries,", ").."}"
+  end
+  local function safelyEncoded(value)
+    local ok,result=pcall(encoded,value)
+    return ok and result or "<unprintable: "..tostring(result)..">"
   end
   local function readMethod(method,...)
     if type(controller[method])~="function" then
@@ -278,7 +302,7 @@ local function probeContraptionController()
       return nil
     end
     local values={}
-    for i=2,result.n do values[#values+1]=encoded(result[i]) end
+    for i=2,result.n do values[#values+1]=safelyEncoded(result[i]) end
     emit(method..": "..table.concat(values," | "))
     return result[2]
   end
@@ -307,7 +331,7 @@ local function probeContraptionController()
         emit(variable..": getGraphVariable MISSING")
       else
         local ok,value=pcall(controller.getGraphVariable,variable)
-        emit(variable..": "..(ok and encoded(value) or "ERROR - "..tostring(value)))
+        emit(variable..": "..(ok and safelyEncoded(value) or "ERROR - "..tostring(value)))
       end
     end
   end
