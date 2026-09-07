@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.12.4"
+local VERSION="1.13.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -31,6 +31,7 @@ local DEFAULTS={
   yawRatePolarity=1,
   yawAccelPerPower=200,
   yawPowerLimit=0.06,
+  minYawCommand=1/120,
   maxYawRate=10.0,
   maxYawAccel=8.0,
   yawApproachRateKp=0.55,
@@ -618,7 +619,23 @@ local function balancedYawAllocation(horizontal,targetYaw)
   local power=targetYaw/totalMoment
   if power<0 or power>cfg.maxPower then return nil end
   for _,actuator in ipairs(selected) do allocation[actuator.index]=power end
-  return allocation
+  local pairs={}
+  local used={}
+  for first=1,#selected do
+    if not used[first] then
+      for second=first+1,#selected do
+        if not used[second] and
+            math.abs(selected[first].fx+selected[second].fx)<0.000001 and
+            math.abs(selected[first].fz+selected[second].fz)<0.000001 then
+          pairs[#pairs+1]={selected[first].index,selected[second].index}
+          used[first],used[second]=true,true
+          break
+        end
+      end
+    end
+  end
+  if #pairs~=2 then return nil end
+  return allocation,pairs
 end
 
 local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
@@ -641,7 +658,8 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
   local targetYaw=yawTorque*4
   local pureYaw=math.abs(targetX)<0.0000001 and math.abs(targetZ)<0.0000001 and
     math.abs(targetYaw)>=0.0000001
-  local allocation=pureYaw and balancedYawAllocation(horizontal,targetYaw) or nil
+  local allocation,yawPairs
+  if pureYaw then allocation,yawPairs=balancedYawAllocation(horizontal,targetYaw) end
   allocation=allocation or minimumThrustAllocation(horizontal,targetX,targetZ,targetYaw)
   if not allocation then
     -- Preserve direction when a combined request exceeds an actuator limit.
@@ -658,17 +676,28 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
   end
 
 
-  -- Pure yaw uses four equal thrusters. Quantize them as one synchronized group
-  -- so every pulse remains force-balanced instead of kicking the ship sideways.
-  local pureYawLevel
-  if pureYaw and allocation then
+  -- Quantize pure yaw in two opposite, force-balanced pairs. Small corrections
+  -- alternate pairs for half-sized, twice-as-frequent impulses; larger commands
+  -- can activate both pairs while all four corners share the work over time.
+  local pureYawLevels
+  if pureYaw and allocation and yawPairs then
     local groupPower
     for _,power in pairs(allocation) do groupPower=power break end
-    local carry=(powerLevelCarry.__balancedYaw or 0)+(groupPower or 0)*15
-    pureYawLevel=math.floor(carry+0.0000001)
-    powerLevelCarry.__balancedYaw=carry-pureYawLevel
+    local carry=(powerLevelCarry.__balancedYaw or 0)+(groupPower or 0)*30
+    local totalPairLevels=math.floor(carry+0.0000001)
+    powerLevelCarry.__balancedYaw=carry-totalPairLevels
     local maxLevel=math.floor(clamp(cfg.maxPower,0,1)*15+0.0000001)
-    pureYawLevel=clamp(pureYawLevel,0,maxLevel)
+    totalPairLevels=clamp(totalPairLevels,0,maxLevel*2)
+    local baseLevel=math.floor(totalPairLevels/2)
+    local extras=totalPairLevels%2
+    local rotation=((powerLevelCarry.__balancedYawRotation or 0)%2)+1
+    powerLevelCarry.__balancedYawRotation=rotation
+    pureYawLevels={}
+    for pairIndex,pair in ipairs(yawPairs) do
+      local relative=(pairIndex-rotation)%2
+      local level=baseLevel+(relative<extras and 1 or 0)
+      pureYawLevels[pair[1]],pureYawLevels[pair[2]]=level,level
+    end
   end
 
   -- Create Propulsion quantizes normalized power to 15 redstone steps. Convert
@@ -703,8 +732,8 @@ local function setOutputs(bodyX,vertical,bodyZ,yawTorque)
     if (m.fy or 0)<=0 then
       -- Dither sub-step horizontal/yaw commands instead of rounding them to
       -- either zero or one permanently violent redstone step.
-      if pureYawLevel and allocation and allocation[i] then
-        power=pureYawLevel/15
+      if pureYawLevels and pureYawLevels[i]~=nil then
+        power=pureYawLevels[i]/15
         powerLevelCarry[m.name]=0
       elseif power<=0 then
         powerLevelCarry[m.name]=0
@@ -790,6 +819,10 @@ local function yawCommandFor(yawError,headingYawRate,aligned)
   end
   local gain=math.max(20,tonumber(cfg.yawAccelPerPower) or 200)
   local command=clamp(desiredAccel/gain,-cfg.yawPowerLimit,cfg.yawPowerLimit)
+  local minimum=clamp(tonumber(cfg.minYawCommand) or 1/120,0,cfg.yawPowerLimit)
+  if math.abs(command)>0.0000001 and math.abs(command)<minimum then
+    command=command>0 and minimum or -minimum
+  end
   return command*cfg.yawActuatorPolarity,desiredRate
 end
 
