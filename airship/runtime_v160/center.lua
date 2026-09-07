@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.12.3"
+local VERSION="1.12.4"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -924,9 +924,7 @@ local function calibrateActuators()
     local angleGain=2*math.abs(accelerationAngle)/(yawPulse*yawSeconds*yawSeconds)
     cfg.yawAccelPerPower=clamp(rateGain>=20 and rateGain or angleGain,20,5000)
     save()
-    -- Land slightly above the recorded resting COM height. Requiring the exact
-    -- grounded value made harmless redstone-step bobbing fail calibration.
-    reachCalibrationAltitude(startY+0.40,"Returning to",0.60,0.75,30)
+    print("Measurements saved; releasing all thrust to drop.")
     return {deltaX=deltaX,deltaZ=deltaZ,yawDelta=yawDelta,
       yawRateDelta=yawRateDelta}
   end,debug.traceback)
@@ -940,7 +938,8 @@ local function calibrateActuators()
   print(string.format("Yaw-rate coordinate polarity: %d",cfg.yawRatePolarity))
   print(string.format("Control matrix: %.3f %.3f / %.3f %.3f",
     cfg.controlMatrix[1],cfg.controlMatrix[2],cfg.controlMatrix[3],cfg.controlMatrix[4]))
-  print("Calibration saved. Thrusters are OFF; now run: airship hold")
+  print("Calibration saved. Thrusters are OFF and the ship is dropping.")
+  print("After it lands, run: airship hold")
 end
 
 local function sendTelemetry(p,yaw)
