@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.15.0"
+local VERSION="1.16.0"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -32,6 +32,7 @@ local DEFAULTS={
   yawAccelPerPower=200,
   yawPowerLimit=0.06,
   thrusterResponseSeconds=0.50,
+  yawPredictionSeconds=0.80,
   maxYawRate=10.0,
   maxYawAccel=8.0,
   yawApproachRateKp=0.55,
@@ -806,17 +807,27 @@ local function verticalCommand(p,targetY)
 end
 
 local function yawCommandFor(yawError,headingYawRate,aligned)
-  local absoluteError=math.abs(yawError)
-  local usableError=math.max(0,absoluteError-cfg.yawDeadband)
   local yawAccel=math.max(0.01,cfg.maxYawAccel)
   local response=clamp(tonumber(cfg.thrusterResponseSeconds) or 0.50,0,2)
+  -- Decide from the heading we are approaching, not only the heading sampled
+  -- now. The extra lead covers the control/network interval and the positive
+  -- impulse left while the old bank fades and the braking bank spools.
+  local prediction=clamp(tonumber(cfg.yawPredictionSeconds) or 0.80,response,2)
+  local projectedError=yawError-headingYawRate*prediction
+  local crossing=yawError*headingYawRate>0 and yawError*projectedError<=0
+  local planningError=crossing and 0 or projectedError
+  local usableError=math.max(0,math.abs(planningError)-cfg.yawDeadband)
   -- Maximum rate that can survive the response delay and then decelerate over
   -- the remaining angle: distance = rate*delay + rate^2/(2*acceleration).
   local brakingRate=(math.sqrt((yawAccel*response)^2+
     2*yawAccel*usableError)-yawAccel*response)*0.70
   local desiredRate=math.min(cfg.maxYawRate,
     usableError*cfg.yawApproachRateKp,brakingRate)
-  if yawError<0 then desiredRate=-desiredRate end
+  if planningError<0 then desiredRate=-desiredRate end
+  -- If the projected heading has already crossed the target, request zero
+  -- rate immediately. Rate feedback then switches to counter-thrust now,
+  -- instead of waiting for the sampled angle itself to overshoot.
+  if crossing then desiredRate=0 end
   if aligned then desiredRate=desiredRate*cfg.movingYawScale end
 
   -- Track the planned angular velocity. When the measured yaw rate is too high
