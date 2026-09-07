@@ -5,7 +5,7 @@ local ROLE_MARKER="CENTER_CONTROLLER_MAIN"
 -- Fly:   airship goto X Y Z
 -- Other: airship status | list | controller | setup | calibrate | zero | hold | abort
 
-local VERSION="1.12.2"
+local VERSION="1.12.3"
 local SETTINGS_FILE="/.ship_autopilot.settings"
 local CONTROL_DT=0.10
 local REMOTE_PROTOCOL="sable_airship_thrusters_v1"
@@ -815,7 +815,7 @@ local function calibrationPulse(commandX,commandZ,commandYaw,targetY,seconds)
     wrapAngle(endYaw-startYaw),yawRate-startYawRate,startYaw,startYawRate
 end
 
-local function reachCalibrationAltitude(targetY,label,tolerance,speedTolerance,timeout)
+local function reachCalibrationAltitude(targetY,label,tolerance,speedTolerance,timeout,minimumY)
   print(label..string.format(" %.2f",targetY))
   tolerance=tolerance or 0.35
   speedTolerance=speedTolerance or 0.35
@@ -829,9 +829,12 @@ local function reachCalibrationAltitude(targetY,label,tolerance,speedTolerance,t
     lastY,lastVelocity=p.y,velocity.y
     local vertical,errorY=verticalCommand(p,targetY)
     setOutputs(0,vertical,0,0)
-    if math.abs(errorY)<=tolerance and math.abs(velocity.y)<=speedTolerance then
+    local atTarget=math.abs(errorY)<=tolerance and math.abs(velocity.y)<=speedTolerance
+    local safelyClear=minimumY and p.y>=minimumY and
+      math.abs(velocity.y)<=math.max(speedTolerance,0.75)
+    if atTarget or safelyClear then
       stableFrames=stableFrames+1
-      if stableFrames>=5 then return end
+      if stableFrames>=5 then return p end
     else
       stableFrames=0
     end
@@ -850,7 +853,7 @@ local function calibrateActuators()
   local p,_,controllerError=readControllerPose()
   if not p then error("Controller physics unavailable: "..tostring(controllerError),0) end
   print("ACTUATOR CALIBRATION v"..VERSION)
-  print("The ship will rise 2.5 blocks, then run X, Z and yaw pulses.")
+  print("The ship will rise clear of the ground, then run X, Z and yaw pulses.")
   print("Use a clear area with overhead room; gyro must be active.")
   if tostring(ask("Type CALIBRATE to begin","")):upper()~="CALIBRATE" then
     error("Calibration cancelled",0)
@@ -865,7 +868,10 @@ local function calibrateActuators()
   local pulsePower=1/15
   local pulseSeconds=0.40
   local ok,result=xpcall(function()
-    reachCalibrationAltitude(calibrationY,"Taking off to")
+    local airborne=reachCalibrationAltitude(calibrationY,"Taking off toward",
+      0.35,0.35,20,startY+1.50)
+    calibrationY=airborne.y
+    print(string.format("Ground clear; holding actual Y %.2f",calibrationY))
 
     print("Testing logical +X...")
     local deltaX,_,_,headingX=calibrationPulse(pulsePower,0,0,calibrationY,pulseSeconds)
